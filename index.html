@@ -214,16 +214,16 @@ textarea {
     </div>
 
     <div class="keycard" id="keyCard">
-      <h3>Claude API 키</h3>
+      <h3>AI 연결 (API 키)</h3>
       <div id="keyEdit">
-        <p>console.anthropic.com → API Keys에서 만든 키(sk-ant-로 시작)를 붙여넣으세요. 키는 이 아이패드의 이 브라우저에만 저장됩니다.</p>
+        <p>DeepSeek 키(sk-…) 또는 Claude 키(sk-ant-…)를 붙여넣으면 키 모양을 보고 자동으로 연결합니다. 키는 이 아이패드의 이 브라우저에만 저장됩니다.</p>
         <div class="key-row" style="margin-top:12px">
-          <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-ant-...">
+          <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-...">
           <button class="primary" id="saveKey" style="padding:12px 20px;font-size:15px">저장하고 연결 확인</button>
         </div>
       </div>
       <div class="key-ok" id="keyShow" hidden>
-        <span class="dot"></span><span>API 키 저장됨</span><span class="mono" id="keyMask"></span>
+        <span class="dot"></span><span><b id="keyProv"></b> 연결됨</span><span class="mono" id="keyMask"></span>
         <button class="mini" id="changeKey">변경</button>
         <button class="mini" id="testKey">연결 확인</button>
       </div>
@@ -401,35 +401,47 @@ textarea {
   }
   const handsfree = () => $("hf").value === "1";
 
-  // ---------- Claude API ----------
+  // ---------- AI API (Claude or DeepSeek, picked from the key) ----------
+  const PROVIDERS = {
+    claude:   { label: "Claude",   site: "console.anthropic.com" },
+    deepseek: { label: "DeepSeek", site: "platform.deepseek.com" },
+  };
+  const providerOf = (k) => (k || "").startsWith("sk-ant-") ? "claude" : "deepseek";
+
   async function ask({ system, messages, model = MODEL_CHAT, max_tokens = 400, signal }) {
+    const prov = providerOf(apiKey);
+    const wantsJSON = /only JSON/i.test(messages[messages.length - 1].content);
+    let url, headers, body;
+    if (prov === "claude") {
+      url = "https://api.anthropic.com/v1/messages";
+      headers = { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
+      body = { model, max_tokens, system, messages };
+    } else {
+      url = "https://api.deepseek.com/chat/completions";
+      headers = { "content-type": "application/json", "authorization": "Bearer " + apiKey };
+      body = { model: "deepseek-chat", max_tokens, temperature: wantsJSON ? 0.3 : 0.9, messages: [{ role: "system", content: system }, ...messages] };
+      if (wantsJSON) body.response_format = { type: "json_object" };
+    }
     let res;
     try {
-      res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST", signal,
-        headers: {
-          "content-type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({ model, max_tokens, system, messages }),
-      });
+      res = await fetch(url, { method: "POST", signal, headers, body: JSON.stringify(body) });
     } catch (e) {
       if (e && e.name === "AbortError") throw { code: "cancelled" };
       throw { code: "network" };
     }
     if (!res.ok) {
-      let body = ""; try { body = await res.text(); } catch {}
+      let txt = ""; try { txt = await res.text(); } catch {}
       let code = "http";
       if (res.status === 401) code = "auth";
+      else if (res.status === 402 || /credit|balance|billing|insufficient/i.test(txt)) code = "credit";
       else if (res.status === 429) code = "rate";
       else if (res.status === 529 || res.status >= 500) code = "overloaded";
-      else if (/credit|balance|billing/i.test(body)) code = "credit";
-      throw { code, status: res.status, body };
+      throw { code, status: res.status, body: txt };
     }
     const data = await res.json();
-    const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim();
+    const text = prov === "claude"
+      ? (data.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim()
+      : String(data.choices?.[0]?.message?.content || "").trim();
     if (!text) throw { code: "empty" };
     return text;
   }
@@ -443,10 +455,10 @@ textarea {
   function errText(e) {
     const c = e && e.code;
     if (c === "auth") return "API 키가 맞지 않아요. 처음 화면에서 키를 다시 입력해주세요.";
-    if (c === "credit") return "API 크레딧이 부족해요. console.anthropic.com → Billing에서 충전해주세요.";
+    if (c === "credit") return `API 잔액이 부족해요. ${PROVIDERS[providerOf(apiKey)].site}에서 충전해주세요.`;
     if (c === "rate") return "요청이 너무 많아요. 잠시 후 다시 말해주세요.";
-    if (c === "overloaded") return "Claude 서버가 혼잡해요. 잠시 후 다시 말해주세요.";
-    if (c === "network") return "인터넷 연결을 확인해주세요.";
+    if (c === "overloaded") return "AI 서버가 혼잡해요. 잠시 후 다시 말해주세요.";
+    if (c === "network") return "AI 서버에 연결하지 못했어요. 인터넷 연결을 확인해주세요.";
     if (c === "json") return "정리 결과를 읽지 못했어요. 다시 시도해주세요.";
     if (c === "empty") return "답이 비어 있어요. 다시 말해주세요.";
     if (c === "http") return `요청이 거절됐어요 (코드 ${e.status}). ${String(e.body || "").slice(0, 120)}`;
@@ -458,7 +470,8 @@ textarea {
     const has = !!apiKey;
     $("keyEdit").hidden = has; $("keyShow").hidden = !has;
     $("keyCard").classList.toggle("need", !has);
-    $("keyMask").textContent = has ? apiKey.slice(0, 10) + "…" + apiKey.slice(-4) : "";
+    $("keyMask").textContent = has ? apiKey.slice(0, 8) + "…" + apiKey.slice(-4) : "";
+    $("keyProv").textContent = has ? PROVIDERS[providerOf(apiKey)].label : "";
   }
   async function testKey() {
     $("keyMsg").className = "note"; $("keyMsg").textContent = "연결 확인 중…";
@@ -469,7 +482,7 @@ textarea {
   }
   $("saveKey").onclick = () => {
     const v = $("apiKey").value.trim();
-    if (!v.startsWith("sk-ant-")) { $("keyMsg").className = "msg-bad"; $("keyMsg").textContent = "sk-ant- 로 시작하는 키를 붙여넣어 주세요."; return; }
+    if (!/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) { $("keyMsg").className = "msg-bad"; $("keyMsg").textContent = "sk- 로 시작하는 API 키 전체를 붙여넣어 주세요. (앞뒤 공백 없이)"; return; }
     apiKey = v; store.set("tp_key", v); $("apiKey").value = "";
     renderKey(); renderSetup(); testKey();
   };
