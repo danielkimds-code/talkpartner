@@ -381,7 +381,11 @@ textarea {
     const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t));
     return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
   }
+  function relayToken() {
+    try { return localStorage.getItem("tp_rtok") || sessionStorage.getItem("tp_rtok") || ""; } catch { return ""; }
+  }
   function loggedIn() {
+    if (!relayToken()) return false;   // older sessions log in once more to get the relay token
     try { const u = Number(localStorage.getItem("tp_auth_until") || 0); if (u > Date.now()) return true; } catch {}
     try { return sessionStorage.getItem("tp_auth") === "1"; } catch { return false; }
   }
@@ -401,16 +405,18 @@ textarea {
       document.getElementById("loginPw").value = ""; document.getElementById("loginPw").focus();
       return;
     }
-    try { sessionStorage.setItem("tp_auth", "1"); } catch {}
+    let rtok = "";
+    try { rtok = await sha256("relay|" + id + "|" + pw); } catch {}
+    try { sessionStorage.setItem("tp_auth", "1"); sessionStorage.setItem("tp_rtok", rtok); } catch {}
     if (document.getElementById("loginKeep").checked) {
-      try { localStorage.setItem("tp_auth_until", String(Date.now() + LOGIN_DAYS * 864e5)); } catch {}
+      try { localStorage.setItem("tp_auth_until", String(Date.now() + LOGIN_DAYS * 864e5)); localStorage.setItem("tp_rtok", rtok); } catch {}
     }
     document.getElementById("loginErr").textContent = "";
     document.getElementById("loginPw").value = "";
     unlock();
   });
   document.getElementById("logoutBtn").addEventListener("click", () => {
-    try { localStorage.removeItem("tp_auth_until"); sessionStorage.removeItem("tp_auth"); } catch {}
+    try { localStorage.removeItem("tp_auth_until"); localStorage.removeItem("tp_rtok"); sessionStorage.removeItem("tp_auth"); sessionStorage.removeItem("tp_rtok"); } catch {}
     location.reload();
   });
 
@@ -547,10 +553,14 @@ textarea {
     claude:   { label: "Claude 공식", site: "console.anthropic.com" },
     deepseek: { label: "DeepSeek",    site: "platform.deepseek.com" },
     flow:     { label: "aiapiflow",   site: "aiapiflow.com" },
+    builtin:  { label: "자동 연결",   site: "aiapiflow.com" },
   };
+  // Built-in connection: the API key lives inside the owner's Cloudflare relay, not in this public page.
+  const BUILTIN_RELAY = "";
   const FLOW_MODELS = { chat: "claude-haiku-4-5-20251001", coach: "claude-sonnet-5-5" };
   const providerOf = (k) => {
     k = k || "";
+    if (!k && BUILTIN_RELAY) return "builtin";
     if (k.startsWith("sk-ant-")) return "claude";
     if (/^sk-[0-9a-f]{32}$/.test(k)) return "deepseek";
     return "flow";
@@ -566,6 +576,10 @@ textarea {
       url = "https://api.anthropic.com/v1/messages";
       headers = { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
       body = { model, max_tokens, system, messages };
+    } else if (prov === "builtin") {
+      url = BUILTIN_RELAY.replace(/\/+$/, "") + "/v1/chat/completions";
+      headers = { "content-type": "application/json", "x-tp-token": relayToken() };
+      body = { model: model === MODEL_COACH ? FLOW_MODELS.coach : FLOW_MODELS.chat, max_tokens, messages: [{ role: "system", content: system }, ...messages] };
     } else if (prov === "flow") {
       if (!relayUrl) throw { code: "norelay" };
       url = relayBase() + "/v1/chat/completions";
@@ -609,6 +623,7 @@ textarea {
   }
   function errText(e) {
     const c = e && e.code;
+    if (c === "auth" && providerOf(apiKey) === "builtin") return "자동 연결 인증이 맞지 않아요. 로그아웃 후 다시 로그인해주세요.";
     if (c === "auth") return "API 키가 맞지 않아요. 처음 화면에서 키를 다시 입력해주세요.";
     if (c === "credit") return `API 잔액이 부족해요. ${PROVIDERS[providerOf(apiKey)].site}에서 충전해주세요.`;
     if (c === "rate") return "요청이 너무 많아요. 잠시 후 다시 말해주세요.";
@@ -626,6 +641,13 @@ textarea {
 
   // ---------- API key UI ----------
   function renderKey() {
+    if (!apiKey && BUILTIN_RELAY) {
+      $("keyEdit").hidden = true; $("keyShow").hidden = false; $("keyCard").classList.remove("need");
+      $("keyProv").textContent = "자동 연결"; $("keyMask").textContent = "aiapiflow · 키 입력 필요 없음";
+      $("changeKey").textContent = "다른 키 쓰기"; $("relayBox").hidden = true;
+      return;
+    }
+    $("changeKey").textContent = "변경";
     const has = !!apiKey;
     $("keyEdit").hidden = has; $("keyShow").hidden = !has;
     $("keyCard").classList.toggle("need", !has);
@@ -715,8 +737,9 @@ textarea {
       return b;
     }));
     const relayMissing = providerOf(apiKey) === "flow" && !relayUrl;
-    $("startBtn").disabled = !scene || !apiKey || relayMissing;
-    $("startNote").textContent = !apiKey ? "먼저 API 키를 저장해주세요." : relayMissing ? "중계 서버 주소를 먼저 넣어주세요." : scene ? `상대역: ${LOOK[scene.id].name} · ${scene.title}` : "상황을 하나 골라주세요.";
+    const connected = !!apiKey || !!BUILTIN_RELAY;
+    $("startBtn").disabled = !scene || !connected || relayMissing;
+    $("startNote").textContent = !connected ? "먼저 API 키를 저장해주세요." : relayMissing ? "중계 서버 주소를 먼저 넣어주세요." : scene ? `상대역: ${LOOK[scene.id].name} · ${scene.title}` : "상황을 하나 골라주세요.";
     const list = store.get("tp_review", []).filter(c => (c.lang || "en") === lang);
     $("reviewWrap").hidden = list.length === 0;
     $("reviewBox").replaceChildren(...list.slice(0, 8).map(c => {
@@ -1142,7 +1165,7 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
   $("hintBtn").onclick = () => { stopListening(); setState("paused"); showHint(); };
   $("endBtn").onclick = endChat;
   $("startBtn").onclick = async () => {
-    if (!scene || !apiKey) return;
+    if (!scene || (!apiKey && !BUILTIN_RELAY)) return;
     // iPad: unlock speech output and ask for the microphone inside this tap
     try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch {}
     try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); } catch {}
