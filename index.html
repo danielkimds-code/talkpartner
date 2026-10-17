@@ -556,7 +556,7 @@ textarea {
     builtin:  { label: "자동 연결",   site: "aiapiflow.com" },
   };
   // Built-in connection: the API key lives inside the owner's Cloudflare relay, not in this public page.
-  const BUILTIN_RELAY = "";
+  const BUILTIN_RELAY = "https://talkpartner-relay.danielkimds.workers.dev";
   const FLOW_MODELS = { chat: "claude-haiku-4-5-20251001", coach: "claude-sonnet-5-5" };
   const providerOf = (k) => {
     k = k || "";
