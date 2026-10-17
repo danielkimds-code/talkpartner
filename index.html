@@ -64,6 +64,13 @@ main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: tou
 .scene .txt { display: grid; gap: 2px; min-width: 0; }
 .scene b { font-weight: 600; font-size: 16.5px; }
 .scene small { color: var(--muted); font-size: 14px; line-height: 1.4; }
+.langs { display: inline-flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); margin-bottom: 16px; }
+.lang-btn { border: 0; background: transparent; border-radius: 10px; padding: 10px 18px; font-weight: 600; font-size: 15.5px; color: var(--muted); display: inline-flex; gap: 8px; align-items: center; }
+.lang-btn .tag { font-family: var(--font-mono); font-size: 12px; padding: 1px 6px; border-radius: 5px; background: var(--bg); color: var(--muted); }
+.lang-btn[aria-selected="true"] { background: var(--ink); color: var(--bg); }
+.lang-btn[aria-selected="true"] .tag { background: color-mix(in srgb, var(--bg) 20%, transparent); color: var(--bg); }
+.read { font-size: 13.5px; color: var(--signal); font-weight: 500; }
+.ko.auto { padding-top: 2px; }
 .levels { display: flex; flex-wrap: wrap; gap: 10px; }
 .seg { border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 10px 20px; font-size: 15px; }
 .seg[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
@@ -192,6 +199,20 @@ textarea {
 .fb-actions { display: flex; gap: 12px; flex-wrap: wrap; }
 .empty-good { background: var(--good-soft); color: var(--good); border-radius: 12px; padding: 14px 16px; font-weight: 500; }
 
+/* Login */
+.login { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center;
+  padding: max(24px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px)); }
+.login form { width: 100%; max-width: 380px; display: grid; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 28px 24px; }
+.login .brand { font-size: 26px; text-align: center; }
+.login .sub { text-align: center; color: var(--muted); font-size: 14.5px; margin: -6px 0 6px; }
+.login label { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
+.login input[type=text], .login input[type=password] { font: inherit; font-size: 17px; padding: 13px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.login .remember { display: flex; gap: 8px; align-items: center; font-size: 14.5px; color: var(--ink); }
+.login .remember input { width: 20px; height: 20px; }
+.login .err { color: var(--bad); font-size: 14px; min-height: 1.3em; text-align: center; }
+@media (prefers-reduced-motion: no-preference) { .login form.shake { animation: shake .35s; } }
+@keyframes shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+
 /* Character */
 .av { display: block; width: 100%; height: 100%; }
 .face, .mini-face { border-radius: 50%; overflow: hidden; }
@@ -203,12 +224,24 @@ textarea {
 </style>
 </head>
 <body>
+<div class="login" id="loginView">
+  <form id="loginForm" autocomplete="on">
+    <div class="brand">Talk<span>Partner</span></div>
+    <p class="sub">영어 회화 연습 · 로그인</p>
+    <label>아이디 <input type="text" id="loginId" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+    <label>비밀번호 <input type="password" id="loginPw" autocomplete="current-password" required></label>
+    <label class="remember"><input type="checkbox" id="loginKeep" checked> 이 아이패드에서 로그인 유지</label>
+    <button class="primary" type="submit">로그인</button>
+    <div class="err" id="loginErr"></div>
+  </form>
+</div>
 
 <header>
   <div class="wrap">
     <div class="brand">Talk<span>Partner</span></div>
     <div class="scene-tag" id="sceneTag"></div>
     <button class="icon-btn" id="homeBtn" hidden>처음으로</button>
+    <button class="icon-btn" id="logoutBtn">로그아웃</button>
   </div>
 </header>
 
@@ -216,8 +249,9 @@ textarea {
   <!-- SETUP -->
   <section class="wrap setup" id="setupView">
     <div>
-      <h1>상황을 고르고, 영어로 말하세요.</h1>
-      <p class="lead">AI 상대가 먼저 말을 겁니다. 상대가 말을 마치면 자동으로 듣기 시작하고, 내가 말을 멈추면 자동으로 보냅니다. 대화를 마치면 틀린 표현과 원어민 표현을 정리해 드려요.</p>
+      <div class="langs" id="langs" role="tablist" aria-label="배울 언어"></div>
+      <h1 id="setupTitle">상황을 고르고, 영어로 말하세요.</h1>
+      <p class="lead" id="setupLead"></p>
     </div>
 
     <div class="keycard" id="keyCard">
@@ -256,11 +290,11 @@ textarea {
     </div>
 
     <div>
-      <div class="group-label">고객 대응 <span class="chip">업무</span></div>
+      <div class="group-label" id="grp1Label">고객 대응 <span class="chip">업무</span></div>
       <div class="scenes" id="sceneWork"></div>
     </div>
     <div>
-      <div class="group-label">일상 회화</div>
+      <div class="group-label" id="grp2Label">일상 회화</div>
       <div class="scenes" id="sceneDaily"></div>
     </div>
 
@@ -340,6 +374,46 @@ textarea {
 
 <script>
 (() => {
+  // ---------- login gate (simple lock screen; only a hash is stored in the code) ----------
+  const LOGIN_HASH = "77f926432da5beafc6dfee03159d50009eb94a8e7598101b381288100aa69ae1";
+  const LOGIN_DAYS = 30;
+  async function sha256(t) {
+    const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t));
+    return [...new Uint8Array(b)].map(x => x.toString(16).padStart(2, "0")).join("");
+  }
+  function loggedIn() {
+    try { const u = Number(localStorage.getItem("tp_auth_until") || 0); if (u > Date.now()) return true; } catch {}
+    try { return sessionStorage.getItem("tp_auth") === "1"; } catch { return false; }
+  }
+  function unlock() { document.getElementById("loginView").hidden = true; }
+  if (loggedIn()) unlock();
+  else setTimeout(() => document.getElementById("loginId").focus(), 50);
+  document.getElementById("loginForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const id = document.getElementById("loginId").value.trim().normalize("NFC");
+    const pw = document.getElementById("loginPw").value.normalize("NFC");
+    let h = "";
+    try { h = await sha256("talkpartner|" + id + "|" + pw); } catch {}
+    const f = document.getElementById("loginForm");
+    if (h !== LOGIN_HASH) {
+      document.getElementById("loginErr").textContent = "아이디 또는 비밀번호가 맞지 않아요.";
+      f.classList.remove("shake"); void f.offsetWidth; f.classList.add("shake");
+      document.getElementById("loginPw").value = ""; document.getElementById("loginPw").focus();
+      return;
+    }
+    try { sessionStorage.setItem("tp_auth", "1"); } catch {}
+    if (document.getElementById("loginKeep").checked) {
+      try { localStorage.setItem("tp_auth_until", String(Date.now() + LOGIN_DAYS * 864e5)); } catch {}
+    }
+    document.getElementById("loginErr").textContent = "";
+    document.getElementById("loginPw").value = "";
+    unlock();
+  });
+  document.getElementById("logoutBtn").addEventListener("click", () => {
+    try { localStorage.removeItem("tp_auth_until"); sessionStorage.removeItem("tp_auth"); } catch {}
+    location.reload();
+  });
+
   const MODEL_CHAT = "claude-haiku-5-5";    // fast replies for conversation, hints, translation
   const MODEL_COACH = "claude-sonnet-5-5";  // careful review at the end
 
@@ -353,6 +427,13 @@ textarea {
     airport:{ name: "Emma",   job: "호텔 프런트 직원",          bg: "#F3E3D3", skin: "#E2AE88", hair: "#6B3E26", style: "bun",   shirt: "#6E2B3A", female: true },
     taxi:   { name: "Carlos", job: "택시 기사",                 bg: "#E5E3F7", skin: "#B97A57", hair: "#231A15", style: "short", shirt: "#E3A63C", beard: true },
     free:   { name: "Alex",   job: "영어 대화 친구",            bg: "#FCE6D6", skin: "#D9A07A", hair: "#3A2418", style: "curly", shirt: "#E07A3A" },
+    vgreet: { name: "Lan",    job: "하노이 친구",               bg: "#FDE3E7", skin: "#F0C9A8", hair: "#1C1714", style: "long",  shirt: "#D8435B", female: true },
+    vcafe:  { name: "Vy",     job: "카페 직원",                 bg: "#E4EFE0", skin: "#EFC6A2", hair: "#241B16", style: "bun",   shirt: "#5E7D3A", female: true },
+    vfood:  { name: "Hùng",   job: "쌀국수 식당 사장님",        bg: "#FFF0D2", skin: "#D9A47E", hair: "#1E1915", style: "short", shirt: "#C8452B" },
+    vmarket:{ name: "Cô Hoa", job: "시장 과일 상인",            bg: "#FCEFD9", skin: "#D2976F", hair: "#2B211C", style: "bun",   shirt: "#2F7E79", female: true },
+    vgrab:  { name: "Minh",   job: "그랩 기사",                 bg: "#DDF1E4", skin: "#C98C64", hair: "#181412", style: "short", shirt: "#1E9B4E" },
+    vwork:  { name: "Tuấn",   job: "BHV 현장 직원",             bg: "#DDE7F5", skin: "#D7A07A", hair: "#1A1613", style: "short", shirt: "#33507A", vest: true },
+    vfree:  { name: "Linh",   job: "베트남어 대화 친구",        bg: "#EFE4F8", skin: "#EDC3A0", hair: "#2A1D18", style: "long",  shirt: "#7A4FA8", female: true },
   };
   let avN = 0;
   function avatar(id) {
@@ -381,28 +462,58 @@ textarea {
   }
 
   const SCENES = [
-    { id: "claim", group: "work", title: "불량 클레임 1차 대응", desc: "고객 품질 담당이 ENIG 변색 불량을 제기합니다.",
+    { id: "claim", lang: "en", group: "work", title: "불량 클레임 1차 대응", desc: "고객 품질 담당이 ENIG 변색 불량을 제기합니다.",
       role: "You are Mike, a supplier quality engineer at a US smartphone customer. You just found gold-surface discoloration on incoming FPCB lots (ENIG finish) from the user's company and you are calling the user, their process engineer. You are firm but professional. Ask about lot numbers, root cause, containment and timing." },
-    { id: "8d", group: "work", title: "대책서(8D) 설명", desc: "근본원인과 재발방지 대책을 고객에게 설명합니다.",
+    { id: "8d", lang: "en", group: "work", title: "대책서(8D) 설명", desc: "근본원인과 재발방지 대책을 고객에게 설명합니다.",
       role: "You are Sarah, a customer quality manager reviewing an 8D report the user's company submitted for a nickel corrosion (black pad) issue on ENIG FPCB. Challenge the root cause logic, ask for evidence (SEM/EDS, Cpk data), and ask how they verified effectiveness." },
-    { id: "audit", group: "work", title: "고객 감사 · 공정 투어", desc: "고객 감사원에게 도금 라인을 안내합니다.",
+    { id: "audit", lang: "en", group: "work", title: "고객 감사 · 공정 투어", desc: "고객 감사원에게 도금 라인을 안내합니다.",
       role: "You are David, a customer auditor visiting the user's FPCB plating line for a process audit. Ask practical audit questions about chemical bath control, analysis frequency, operator training, SPC charts and how nonconforming product is handled." },
-    { id: "delay", group: "work", title: "납기 지연 설명", desc: "설비 이슈로 출하가 늦어진 상황을 설명합니다.",
+    { id: "delay", lang: "en", group: "work", title: "납기 지연 설명", desc: "설비 이슈로 출하가 늦어진 상황을 설명합니다.",
       role: "You are Jenny, a buyer at a customer company. The user's shipment will be late because of an equipment problem on the plating line. You are worried about your production schedule. Ask for the new date, recovery plan and whether partial shipment is possible." },
-    { id: "dinner", group: "daily", title: "고객과 저녁 식사", desc: "출장 중 고객과 가볍게 스몰토크를 나눕니다.",
+    { id: "dinner", lang: "en", group: "daily", title: "고객과 저녁 식사", desc: "출장 중 고객과 가볍게 스몰토크를 나눕니다.",
       role: "You are Tom, a friendly customer engineer having dinner with the user during a business trip. Make relaxed small talk: food, travel, family, hobbies, weekend plans. Keep it light and warm." },
-    { id: "airport", group: "daily", title: "공항 · 호텔 체크인", desc: "출장지 공항과 호텔에서 필요한 대화.",
+    { id: "airport", lang: "en", group: "daily", title: "공항 · 호텔 체크인", desc: "출장지 공항과 호텔에서 필요한 대화.",
       role: "You are Emma, a hotel front desk clerk. The user is checking in after a long flight on a business trip. Handle the reservation, ask about breakfast, wake-up call, payment and late checkout. Add a small realistic problem (e.g., room not ready yet)." },
-    { id: "taxi", group: "daily", title: "택시 · 길 묻기", desc: "택시 기사와 대화하거나 길을 묻습니다.",
+    { id: "taxi", lang: "en", group: "daily", title: "택시 · 길 묻기", desc: "택시 기사와 대화하거나 길을 묻습니다.",
       role: "You are Carlos, a talkative taxi driver taking the user from the airport to an industrial park. Confirm the destination, chat about traffic and the city, and ask about the user's trip." },
-    { id: "free", group: "daily", title: "자유 대화", desc: "주제 없이 편하게 이야기합니다.",
+    { id: "free", lang: "en", group: "daily", title: "자유 대화", desc: "주제 없이 편하게 이야기합니다.",
       role: "You are Alex, a friendly English conversation partner. Chat naturally about whatever the user wants: their day, work, family, hobbies, news. Show genuine curiosity." },
+
+    { id: "vgreet", lang: "vi", group: "work", title: "인사 · 자기소개", desc: "처음 만난 친구와 이름, 나라, 하는 일을 이야기합니다.",
+      role: "You are Lan, a friendly young woman from Hà Nội meeting the learner (a Korean man working in Vietnam) for the first time. Greet, ask his name, where he is from, his job, how long he has lived in Vietnam. Call him 'anh' and yourself 'em'." },
+    { id: "vcafe", lang: "vi", group: "work", title: "카페 주문", desc: "카페에서 커피를 주문하고 계산합니다.",
+      role: "You are Vy, a cashier at a Vietnamese coffee shop. Take the learner's order (cà phê sữa đá, bạc xỉu, trà đá, sinh tố...), ask hot or iced, size, sugar, eat in or take away (mang đi), then tell the price in đồng. Call him 'anh', yourself 'em'." },
+    { id: "vfood", lang: "vi", group: "work", title: "식당 · 쌀국수", desc: "쌀국수 가게에서 주문하고 맛 이야기를 합니다.",
+      role: "You are Hùng, the owner of a small phở shop. Ask what he wants (phở bò, phở gà, bún chả, chín/tái), whether to add herbs or chili, what to drink, and later ask if it tastes good and handle paying. Call him 'anh', yourself 'anh' too or 'tôi'." },
+    { id: "vmarket", lang: "vi", group: "work", title: "시장 · 가격 흥정", desc: "과일 가게에서 값을 묻고 깎아봅니다.",
+      role: "You are Cô Hoa, a cheerful fruit seller at a local market. Tell prices per kg in đồng (e.g. 'năm mươi nghìn một cân'), let the learner bargain a little, use numbers often so he practices them. Call him 'cháu' or 'anh', yourself 'cô'." },
+    { id: "vgrab", lang: "vi", group: "daily", title: "그랩 · 길 찾기", desc: "그랩 기사와 목적지, 길, 요금을 이야기합니다.",
+      role: "You are Minh, a Grab bike/car driver picking up the learner. Confirm the pick-up and destination, mention traffic, ask simple small-talk questions, and at the end handle payment. Use directions words like rẽ trái, rẽ phải, đi thẳng. Call him 'anh', yourself 'em'." },
+    { id: "vwork", lang: "vi", group: "daily", title: "현지 직원과 인사", desc: "공장에서 현지 직원과 가벼운 인사·안부를 나눕니다.",
+      role: "You are Tuấn, a friendly Vietnamese line worker at the BHV factory. Greet the learner (a Korean engineer) in the morning, ask if he ate breakfast, how he is, talk about the weather, lunch, weekend. Keep it everyday and simple, not technical. Call him 'anh', yourself 'em'." },
+    { id: "vfree", lang: "vi", group: "daily", title: "자유 대화", desc: "주제 없이 편하게 이야기합니다.",
+      role: "You are Linh, a patient Vietnamese conversation partner. Chat about whatever the learner wants: family, food, hobbies, Korea vs Vietnam, plans. Call him 'anh', yourself 'em'." },
   ];
-  const LEVELS = [
-    { id: "basic", label: "기초", rule: "Use very simple, common words and short sentences (A2 level). Speak slowly and clearly." },
-    { id: "mid", label: "중급", rule: "Use everyday natural English (B1-B2 level). Avoid rare idioms." },
-    { id: "adv", label: "실무 원어민", rule: "Speak like a real native professional, natural speed and idioms are fine (C1 level)." },
-  ];
+  const LEVELS_BY_LANG = {
+    en: [
+      { id: "basic", label: "기초", rule: "Use very simple, common words and short sentences (A2 level). Speak slowly and clearly." },
+      { id: "mid", label: "중급", rule: "Use everyday natural English (B1-B2 level). Avoid rare idioms." },
+      { id: "adv", label: "실무 원어민", rule: "Speak like a real native professional, natural speed and idioms are fine (C1 level)." },
+    ],
+    vi: [
+      { id: "zero", label: "왕초보", rule: "The learner is an absolute beginner. Use only the most basic words, ONE short sentence of 3-8 words per turn, and very easy questions (yes/no or one-word answers). Repeat key words often." },
+      { id: "basic", label: "기초", rule: "The learner knows basic phrases. Use simple everyday words, 1-2 short sentences per turn." },
+      { id: "mid", label: "중급", rule: "Use natural everyday Vietnamese at normal speed, 1-3 sentences per turn." },
+    ],
+  };
+  const LANGS = {
+    en: { label: "영어", tag: "EN", speech: "en-US", name: "English",
+          title: "상황을 고르고, 영어로 말하세요.", g1: "고객 대응", g1chip: "업무", g2: "일상 회화",
+          lead: "AI 상대가 먼저 말을 겁니다. 상대가 말을 마치면 자동으로 듣기 시작하고, 내가 말을 멈추면 자동으로 보냅니다. 대화를 마치면 틀린 표현과 원어민 표현을 정리해 드려요." },
+    vi: { label: "베트남어", tag: "VI", speech: "vi-VN", name: "Vietnamese",
+          title: "Xin chào! 베트남어로 말해봐요.", g1: "기초 생활 회화", g1chip: "왕초보 추천", g2: "현지 생활",
+          lead: "상대의 베트남어 아래에 한국어 뜻이 함께 나와요. 막히면 한국어로 말해도 상대가 베트남어로 바꿔서 말해주니 따라 하면 됩니다. 힌트에는 한글 발음도 나와요." },
+  };
 
   const $ = (id) => document.getElementById(id);
   const store = {
@@ -412,7 +523,12 @@ textarea {
 
   let apiKey = store.get("tp_key", "");
   let scene = null;
-  let level = store.get("tp_level", "mid");
+  let lang = store.get("tp_lang", "en");
+  if (!LANGS[lang]) lang = "en";
+  let level = store.get("tp_level_" + lang, lang === "vi" ? "zero" : store.get("tp_level", "mid"));
+  const LEVELS_NOW = () => LEVELS_BY_LANG[lang];
+  const curLevel = () => LEVELS_NOW().find(l => l.id === level) || LEVELS_NOW()[0];
+  const isVi = () => lang === "vi";
   let turns = [];
   let busy = false;
   let ctl = null;
@@ -568,18 +684,40 @@ textarea {
       b.onclick = () => { scene = s; renderSetup(); };
       return b;
     };
-    $("sceneWork").replaceChildren(...SCENES.filter(s => s.group === "work").map(mk));
-    $("sceneDaily").replaceChildren(...SCENES.filter(s => s.group === "daily").map(mk));
-    $("levels").replaceChildren(...LEVELS.map(l => {
+    const L = LANGS[lang];
+    $("langs").replaceChildren(...Object.entries(LANGS).map(([k, v]) => {
+      const b = document.createElement("button");
+      b.className = "lang-btn"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(k === lang));
+      b.innerHTML = `<span class="tag"></span><span></span>`;
+      b.querySelector(".tag").textContent = v.tag; b.lastChild.textContent = v.label;
+      b.onclick = () => {
+        if (k === lang) return;
+        lang = k; store.set("tp_lang", lang);
+        level = store.get("tp_level_" + lang, lang === "vi" ? "zero" : "mid");
+        if (scene && scene.lang !== lang) scene = null;
+        renderSetup();
+      };
+      return b;
+    }));
+    $("setupTitle").textContent = L.title;
+    $("setupLead").textContent = L.lead;
+    $("grp1Label").innerHTML = ""; $("grp1Label").append(L.g1 + " ");
+    const chip = document.createElement("span"); chip.className = "chip"; chip.textContent = L.g1chip; $("grp1Label").append(chip);
+    $("grp2Label").textContent = L.g2;
+    if (scene && scene.lang !== lang) scene = null;
+    $("sceneWork").replaceChildren(...SCENES.filter(s => s.lang === lang && s.group === "work").map(mk));
+    $("sceneDaily").replaceChildren(...SCENES.filter(s => s.lang === lang && s.group === "daily").map(mk));
+    if (!LEVELS_NOW().some(l => l.id === level)) level = LEVELS_NOW()[0].id;
+    $("levels").replaceChildren(...LEVELS_NOW().map(l => {
       const b = document.createElement("button");
       b.className = "seg"; b.textContent = l.label; b.setAttribute("aria-pressed", String(level === l.id));
-      b.onclick = () => { level = l.id; store.set("tp_level", level); renderSetup(); };
+      b.onclick = () => { level = l.id; store.set("tp_level_" + lang, level); renderSetup(); };
       return b;
     }));
     const relayMissing = providerOf(apiKey) === "flow" && !relayUrl;
     $("startBtn").disabled = !scene || !apiKey || relayMissing;
     $("startNote").textContent = !apiKey ? "먼저 API 키를 저장해주세요." : relayMissing ? "중계 서버 주소를 먼저 넣어주세요." : scene ? `상대역: ${LOOK[scene.id].name} · ${scene.title}` : "상황을 하나 골라주세요.";
-    const list = store.get("tp_review", []);
+    const list = store.get("tp_review", []).filter(c => (c.lang || "en") === lang);
     $("reviewWrap").hidden = list.length === 0;
     $("reviewBox").replaceChildren(...list.slice(0, 8).map(c => {
       const d = document.createElement("div"); d.className = "review-item";
@@ -602,7 +740,18 @@ textarea {
 
   // ---------- prompts ----------
   function rules() {
-    const lv = LEVELS.find(l => l.id === level);
+    const lv = curLevel();
+    if (isVi()) return `You are role-playing for a Vietnamese speaking practice app. The learner is a Korean engineer living in Vietnam who is a beginner in Vietnamese. He speaks by voice; his words reach you through Vietnamese speech recognition, so they may be imperfect or have wrong tones. Guess the intended meaning generously.
+ROLE: ${scene.role}
+LEVEL: ${lv.rule}
+OUTPUT FORMAT — always exactly two lines:
+Line 1: what you say, in Vietnamese only (standard Hà Nội Vietnamese with full diacritics). No romanization, no English.
+Line 2: "KO: " followed by a natural Korean translation of line 1.
+RULES:
+- Stay in character the whole time. Keep it short and friendly, like real spoken talk. No lists, markdown, emojis or stage directions.
+- Usually end with a simple question so the learner keeps talking.
+- Do NOT correct his grammar during the conversation.
+- If he says something in Korean or English (because he is stuck), reply in character with a very simple Vietnamese sentence that models what he wanted to say, so he can repeat it.`;
     return `You are role-playing for an English speaking practice app. The learner is a Korean FPCB process engineer who speaks to you by voice; their words reach you through speech recognition, so ignore small transcription glitches and guess the intended meaning.
 ROLE: ${scene.role}
 LEVEL: ${lv.rule}
@@ -641,17 +790,24 @@ RULES:
     $("log").append(outer); scrollDown();
     return { outer, wrap, bubble };
   }
-  function addAiTools(wrap, text) {
+  function splitVi(raw) {
+    const lines = String(raw).split(/\n+/).map(x => x.trim()).filter(Boolean);
+    const koLine = lines.find(x => /^KO\s*[:：]/i.test(x));
+    const vi = lines.filter(x => !/^KO\s*[:：]/i.test(x)).join(" ").replace(/^(Line ?1|VI)\s*[:：]\s*/i, "").trim();
+    return { vi: vi || String(raw).trim(), ko: koLine ? koLine.replace(/^KO\s*[:：]\s*/i, "").trim() : "" };
+  }
+  function addAiTools(wrap, text, koText) {
     const tools = document.createElement("div"); tools.className = "tools";
     const listen = document.createElement("button"); listen.className = "mini"; listen.textContent = "▶ 다시 듣기";
     listen.onclick = () => speak(text, { force: true, thenListen: handsfree() });
     const tr = document.createElement("button"); tr.className = "mini"; tr.textContent = "한국어 뜻";
     const ko = document.createElement("div"); ko.className = "ko"; ko.hidden = true;
+    if (koText) { ko.textContent = koText; if (isVi() && level !== "mid") { ko.hidden = false; ko.classList.add("auto"); } }
     tr.onclick = async () => {
       if (!ko.hidden) { ko.hidden = true; return; }
       ko.hidden = false; if (ko.textContent) return;
       ko.textContent = "번역 중…";
-      try { ko.textContent = await ask({ system: "Translate the English line into natural Korean. Reply with only the Korean.", messages: [{ role: "user", content: text }], max_tokens: 300 }); }
+      try { ko.textContent = await ask({ system: `Translate the ${LANGS[lang].name} line into natural Korean. Reply with only the Korean.`, messages: [{ role: "user", content: text }], max_tokens: 300 }); }
       catch (e) { ko.textContent = errText(e); }
     };
     tools.append(listen, tr); wrap.append(tools, ko);
@@ -687,10 +843,12 @@ RULES:
     bubble.classList.add("thinking"); setState("think");
     ctl = new AbortController();
     try {
-      const text = await ask({ system: rules(), messages: apiMessages(), max_tokens: 300, signal: ctl.signal });
+      const raw = await ask({ system: rules(), messages: apiMessages(), max_tokens: 300, signal: ctl.signal });
+      const { vi, ko } = isVi() ? splitVi(raw) : { vi: raw, ko: "" };
+      const text = vi;
       bubble.classList.remove("thinking"); bubble.textContent = text;
       turns.push({ role: "assistant", content: text });
-      addAiTools(wrap, text);
+      addAiTools(wrap, text, ko);
       busy = false; updateSend(); setState("idle"); scrollDown();
       speak(text, { thenListen: true });
     } catch (e) {
@@ -728,7 +886,7 @@ RULES:
     try {
       const text = await ask({
         system: rules() + "\n\nNow you are NOT the character. You are a helper suggesting what the learner could say.",
-        messages: [{ role: "user", content: `Conversation so far:\n${turns.slice(-8).map(t => (t.role === "user" ? "Learner: " : "Partner: ") + t.content).join("\n")}\n\nSuggest 2 different natural replies the LEARNER could say next to "${last ? last.content : ""}", matching the level. Reply with only JSON: {"options":[{"en":"...","ko":"한국어 뜻"}]}` }],
+        messages: [{ role: "user", content: `Conversation so far:\n${turns.slice(-8).map(t => (t.role === "user" ? "Learner: " : "Partner: ") + t.content).join("\n")}\n\nSuggest 2 different natural replies the LEARNER could say next to "${last ? last.content : ""}", in ${LANGS[lang].name}, matching the level (short!). Reply with only JSON: ${isVi() ? '{"options":[{"t":"Vietnamese sentence with diacritics","read":"한글로 적은 발음 (예: 씬 짜오)","ko":"한국어 뜻"}]}' : '{"options":[{"t":"English sentence","ko":"한국어 뜻"}]}'}` }],
         max_tokens: 400,
       });
       const data = parseJSON(text);
@@ -737,10 +895,13 @@ RULES:
       const head = document.createElement("div"); head.className = "note"; head.textContent = "소리 내어 따라 말해보세요. 누르면 듣기 + 입력창에 들어가요.";
       box.replaceChildren(head, ...opts.map(o => {
         const b = document.createElement("button"); b.className = "hint-opt";
-        const en = document.createElement("b"); en.textContent = String(o.en || "");
+        const say = String(o.t || o.en || o.vi || "");
+        const en = document.createElement("b"); en.textContent = say;
         const ko = document.createElement("span"); ko.textContent = String(o.ko || "");
-        b.append(en, ko);
-        b.onclick = () => { $("input").value = String(o.en || ""); autoGrow(); updateSend(); speak(String(o.en || ""), { force: true, thenListen: false }); };
+        b.append(en);
+        if (o.read) { const r = document.createElement("span"); r.className = "read"; r.textContent = "발음 · " + String(o.read); b.append(r); }
+        b.append(ko);
+        b.onclick = () => { $("input").value = say; autoGrow(); updateSend(); speak(say, { force: true, thenListen: false }); };
         return b;
       }));
     } catch (e) { box.textContent = errText(e); }
@@ -757,19 +918,22 @@ RULES:
     fv.innerHTML = `<p class="note">대화를 돌아보며 교정 노트를 만들고 있어요… (10~30초)</p>`;
     const transcript = turns.map(t => (t.role === "user" ? "LEARNER: " : "PARTNER: ") + t.content).join("\n");
     try {
+      const viCoach = isVi();
       const text = await ask({
         model: MODEL_COACH, max_tokens: 2500,
-        system: "You are an English speaking coach for a Korean manufacturing engineer. The learner spoke by voice, so ignore obvious speech-recognition glitches (missing punctuation, homophones) and focus on real grammar, word choice and naturalness.",
+        system: viCoach
+          ? "You are a kind Vietnamese teacher for a Korean beginner. The learner spoke by voice through Vietnamese speech recognition, so ignore obvious recognition glitches and focus on word choice, word order, missing words, pronouns/politeness (anh/chị/em), and natural phrasing. Lines the learner said in Korean or English count as 'didn't know how to say it': give the Vietnamese for them."
+          : "You are an English speaking coach for a Korean manufacturing engineer. The learner spoke by voice, so ignore obvious speech-recognition glitches (missing punctuation, homophones) and focus on real grammar, word choice and naturalness.",
         messages: [{ role: "user", content: `Review the LEARNER's lines in this role-play (scene: ${scene.title}).
 Transcript:
 ${transcript}
 
 Return only JSON in this shape:
-{"score": 0-100 (communication + accuracy + naturalness),
+{"score": 0-100 (communication + accuracy + naturalness${viCoach ? ", be encouraging for a beginner" : ""}),
  "summary_ko": "2문장 이내 한국어 총평 (잘한 점 1개, 고칠 점 1개)",
- "corrections": [{"original": "learner's sentence", "better": "corrected, natural version", "why_ko": "짧은 한국어 설명"}],
- "expressions": [{"en": "useful phrase for this scene", "ko": "한국어 뜻"}]}
-Include every learner sentence that has a grammar error or sounds unnatural (max 8). Skip sentences that are already fine. Give 4 expressions a native speaker would use in this scene.` }],
+ "corrections": [{"original": "learner's sentence", "better": "corrected, natural ${LANGS[lang].name} version"${viCoach ? ', "read": "better 문장의 한글 발음"' : ""}, "why_ko": "짧은 한국어 설명"}],
+ "expressions": [{"t": "useful ${LANGS[lang].name} phrase for this scene"${viCoach ? ', "read": "한글 발음"' : ""}, "ko": "한국어 뜻"}]}
+Include every learner sentence that has an error, sounds unnatural${viCoach ? ", or was said in Korean/English" : ""} (max 8). Skip sentences that are already fine. Give ${viCoach ? "5 very useful beginner" : "4"} expressions a native speaker would use in this scene.` }],
       });
       renderFeedback(parseJSON(text));
     } catch (e) {
@@ -804,20 +968,25 @@ Include every learner sentence that has a grammar error or sounds unnatural (max
         play.onclick = () => speak(String(c.better), { force: true });
         nw.append(t, play);
         const why = document.createElement("div"); why.className = "why"; why.textContent = String(c.why_ko || "");
-        it.append(old, nw, why); list.append(it);
+        it.append(old, nw);
+        if (c.read) { const r = document.createElement("div"); r.className = "read"; r.textContent = "발음 · " + String(c.read); it.append(r); }
+        it.append(why); list.append(it);
       });
       s1.append(list);
     }
     fv.append(s1);
     if (exprs.length) {
       const s2 = document.createElement("div"); s2.className = "fb-section";
-      const h2 = document.createElement("h3"); h2.textContent = "이 상황에서 원어민이 쓰는 표현 · 누르면 듣기"; s2.append(h2);
+      const h2 = document.createElement("h3"); h2.textContent = (isVi() ? "이 상황에서 바로 쓰는 베트남어 · 누르면 듣기" : "이 상황에서 원어민이 쓰는 표현 · 누르면 듣기"); s2.append(h2);
       const grid = document.createElement("div"); grid.className = "expr";
       exprs.forEach(x => {
         const it = document.createElement("button"); it.className = "expr-item";
-        const b = document.createElement("b"); b.textContent = String(x.en || "");
+        const say = String(x.t || x.en || x.vi || "");
+        const b = document.createElement("b"); b.textContent = say;
         const s = document.createElement("span"); s.textContent = String(x.ko || "");
-        it.append(b, s); it.onclick = () => speak(String(x.en || ""), { force: true });
+        it.append(b);
+        if (x.read) { const r = document.createElement("span"); r.className = "read"; r.textContent = "발음 · " + String(x.read); it.append(r); }
+        it.append(s); it.onclick = () => speak(say, { force: true });
         grid.append(it);
       });
       s2.append(grid); fv.append(s2);
@@ -827,7 +996,7 @@ Include every learner sentence that has a grammar error or sounds unnatural (max
     const home = document.createElement("button"); home.className = "ghost"; home.textContent = "다른 상황 고르기"; home.onclick = () => { show("setup"); renderSetup(); };
     acts.append(again, home); fv.append(acts);
     const prev = store.get("tp_review", []);
-    store.set("tp_review", [...corrections.map(c => ({ original: String(c.original || ""), better: String(c.better) })), ...prev].slice(0, 40));
+    store.set("tp_review", [...corrections.map(c => ({ lang, original: String(c.original || ""), better: String(c.better) })), ...prev].slice(0, 60));
   }
 
   // ---------- speech out ----------
@@ -835,6 +1004,10 @@ Include every learner sentence that has a grammar error or sounds unnatural (max
   const VOICE_M = /Aaron|Alex|Tom|Fred|Evan|Nathan|Guy|Davis|Male/i;
   function pickVoice() {
     if (!window.speechSynthesis) return null;
+    if (isVi()) {
+      const vv = speechSynthesis.getVoices().filter(v => /^vi/i.test(v.lang));
+      return vv.find(v => /Linh|Premium|Enhanced/i.test(v.name)) || vv[0] || null;
+    }
     const vs = speechSynthesis.getVoices().filter(v => /^en[-_]US/i.test(v.lang));
     const female = scene && LOOK[scene.id].female;
     return vs.find(v => (female ? VOICE_F : VOICE_M).test(v.name)) || vs.find(v => /Samantha|Google US English/i.test(v.name)) || vs[0] || null;
@@ -852,8 +1025,8 @@ Include every learner sentence that has a grammar error or sounds unnatural (max
     if (speakDone) speakDone(true);
     cancelSpeech();
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US"; const v = pickVoice(); if (v) u.voice = v;
-    u.rate = Number($("rate").value) || 0.95;
+    u.lang = LANGS[lang].speech; const v = pickVoice(); if (v) u.voice = v;
+    u.rate = (Number($("rate").value) || 0.95) * (isVi() && level === "zero" ? 0.85 : 1);
     let done = false;
     const finish = (silent) => {
       if (done) return; done = true; speakDone = null;
@@ -903,7 +1076,7 @@ Include every learner sentence that has a grammar error or sounds unnatural (max
   function beginRec() {
     try {
       rec = new SR();
-      rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 1;
+      rec.lang = LANGS[lang].speech; rec.interimResults = true; rec.maxAlternatives = 1;
       rec.continuous = true;
       rec.onresult = (ev) => {
         let fin = "", tmp = "";
