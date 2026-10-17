@@ -84,6 +84,13 @@ main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: tou
 .mono { font-family: var(--font-mono); font-size: 14px; color: var(--muted); }
 .msg-ok { color: var(--good); font-size: 14px; }
 .msg-bad { color: var(--bad); font-size: 14px; }
+.relay { display: grid; gap: 10px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.relay p { margin: 0; }
+.relay details { font-size: 14.5px; color: var(--muted); }
+.relay summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 4px 0; }
+.relay ol { margin: 8px 0 0; padding-left: 22px; display: grid; gap: 8px; color: var(--ink); }
+.relay code { font-family: var(--font-mono); font-size: 13px; background: var(--bg); padding: 1px 6px; border-radius: 4px; overflow-wrap: anywhere; }
+.relay a { color: var(--accent); }
 .settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); gap: 12px; }
 .set { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
 .set select { font: inherit; font-size: 15px; background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
@@ -216,7 +223,7 @@ textarea {
     <div class="keycard" id="keyCard">
       <h3>AI 연결 (API 키)</h3>
       <div id="keyEdit">
-        <p>DeepSeek 키(sk-…) 또는 Claude 키(sk-ant-…)를 붙여넣으면 키 모양을 보고 자동으로 연결합니다. 키는 이 아이패드의 이 브라우저에만 저장됩니다.</p>
+        <p>aiapiflow 키, Claude 공식 키(sk-ant-…), DeepSeek 키 중 무엇이든 붙여넣으면 키 모양을 보고 자동으로 연결합니다. 키는 이 아이패드의 이 브라우저에만 저장됩니다.</p>
         <div class="key-row" style="margin-top:12px">
           <input id="apiKey" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="sk-...">
           <button class="primary" id="saveKey" style="padding:12px 20px;font-size:15px">저장하고 연결 확인</button>
@@ -226,6 +233,24 @@ textarea {
         <span class="dot"></span><span><b id="keyProv"></b> 연결됨</span><span class="mono" id="keyMask"></span>
         <button class="mini" id="changeKey">변경</button>
         <button class="mini" id="testKey">연결 확인</button>
+      </div>
+      <div class="relay" id="relayBox" hidden>
+        <p><b>중계 서버 주소</b> · aiapiflow는 웹페이지에서 바로 연결할 수 없어서 Cloudflare 중계 서버를 거칩니다.</p>
+        <div class="key-row">
+          <input id="relayUrl" type="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://talkpartner-relay.○○○.workers.dev">
+          <button class="primary" id="saveRelay" style="padding:12px 20px;font-size:15px">저장하고 연결 확인</button>
+        </div>
+        <details id="relayHelp">
+          <summary>중계 서버 만드는 법 (처음 한 번, 약 5분)</summary>
+          <ol>
+            <li><b>중계 코드 복사</b>: <button class="mini" id="copyWorker">코드 복사하기</button> <span class="note" id="copyMsg"></span></li>
+            <li><a href="https://dash.cloudflare.com/sign-up" target="_blank" rel="noopener">dash.cloudflare.com</a>에서 무료 가입 후 로그인</li>
+            <li>왼쪽 메뉴 <b>Workers &amp; Pages</b> (또는 Compute → Workers) → <b>Create</b> → <b>Start with Hello World!</b></li>
+            <li>이름에 <code>talkpartner-relay</code> 입력 → <b>Deploy</b></li>
+            <li><b>Edit code</b> → 원래 코드를 모두 지우고 복사한 코드를 붙여넣기 → 오른쪽 위 <b>Deploy</b></li>
+            <li>화면에 나오는 주소(<code>https://talkpartner-relay.○○○.workers.dev</code>)를 복사해서 위 칸에 붙여넣고 <b>저장하고 연결 확인</b></li>
+          </ol>
+        </details>
       </div>
       <div id="keyMsg"></div>
     </div>
@@ -401,12 +426,21 @@ textarea {
   }
   const handsfree = () => $("hf").value === "1";
 
-  // ---------- AI API (Claude or DeepSeek, picked from the key) ----------
+  // ---------- AI API (picked from the key) ----------
   const PROVIDERS = {
-    claude:   { label: "Claude",   site: "console.anthropic.com" },
-    deepseek: { label: "DeepSeek", site: "platform.deepseek.com" },
+    claude:   { label: "Claude 공식", site: "console.anthropic.com" },
+    deepseek: { label: "DeepSeek",    site: "platform.deepseek.com" },
+    flow:     { label: "aiapiflow",   site: "aiapiflow.com" },
   };
-  const providerOf = (k) => (k || "").startsWith("sk-ant-") ? "claude" : "deepseek";
+  const FLOW_MODELS = { chat: "claude-haiku-4-5-20251001", coach: "claude-sonnet-5-5" };
+  const providerOf = (k) => {
+    k = k || "";
+    if (k.startsWith("sk-ant-")) return "claude";
+    if (/^sk-[0-9a-f]{32}$/.test(k)) return "deepseek";
+    return "flow";
+  };
+  let relayUrl = store.get("tp_relay", "");
+  const relayBase = () => relayUrl.replace(/\/+$/, "");
 
   async function ask({ system, messages, model = MODEL_CHAT, max_tokens = 400, signal }) {
     const prov = providerOf(apiKey);
@@ -416,6 +450,11 @@ textarea {
       url = "https://api.anthropic.com/v1/messages";
       headers = { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
       body = { model, max_tokens, system, messages };
+    } else if (prov === "flow") {
+      if (!relayUrl) throw { code: "norelay" };
+      url = relayBase() + "/v1/chat/completions";
+      headers = { "content-type": "application/json", "authorization": "Bearer " + apiKey };
+      body = { model: model === MODEL_COACH ? FLOW_MODELS.coach : FLOW_MODELS.chat, max_tokens, messages: [{ role: "system", content: system }, ...messages] };
     } else {
       url = "https://api.deepseek.com/chat/completions";
       headers = { "content-type": "application/json", "authorization": "Bearer " + apiKey };
@@ -458,9 +497,13 @@ textarea {
     if (c === "credit") return `API 잔액이 부족해요. ${PROVIDERS[providerOf(apiKey)].site}에서 충전해주세요.`;
     if (c === "rate") return "요청이 너무 많아요. 잠시 후 다시 말해주세요.";
     if (c === "overloaded") return "AI 서버가 혼잡해요. 잠시 후 다시 말해주세요.";
-    if (c === "network") return "AI 서버에 연결하지 못했어요. 인터넷 연결을 확인해주세요.";
+    if (c === "norelay") return "aiapiflow 키는 중계 서버 주소가 필요해요. 아래 칸에 주소를 넣어주세요.";
+    if (c === "network") return providerOf(apiKey) === "flow"
+      ? "중계 서버에 연결하지 못했어요. 주소가 맞는지, Cloudflare에서 Deploy를 눌렀는지 확인해주세요."
+      : "AI 서버에 연결하지 못했어요. 인터넷 연결을 확인해주세요.";
     if (c === "json") return "정리 결과를 읽지 못했어요. 다시 시도해주세요.";
     if (c === "empty") return "답이 비어 있어요. 다시 말해주세요.";
+    if (c === "http" && e.status === 403 && providerOf(apiKey) === "flow") return "중계 서버가 이 앱 주소를 막고 있어요. 중계 코드를 다시 복사해서 붙여넣고 Deploy 해주세요.";
     if (c === "http") return `요청이 거절됐어요 (코드 ${e.status}). ${String(e.body || "").slice(0, 120)}`;
     return "문제가 생겼어요. 다시 시도해주세요.";
   }
@@ -472,6 +515,11 @@ textarea {
     $("keyCard").classList.toggle("need", !has);
     $("keyMask").textContent = has ? apiKey.slice(0, 8) + "…" + apiKey.slice(-4) : "";
     $("keyProv").textContent = has ? PROVIDERS[providerOf(apiKey)].label : "";
+    const needRelay = has && providerOf(apiKey) === "flow";
+    $("relayBox").hidden = !needRelay;
+    $("relayUrl").value = relayUrl;
+    $("relayHelp").open = needRelay && !relayUrl;
+    if (needRelay && !relayUrl) $("keyCard").classList.add("need");
   }
   async function testKey() {
     $("keyMsg").className = "note"; $("keyMsg").textContent = "연결 확인 중…";
@@ -484,7 +532,27 @@ textarea {
     const v = $("apiKey").value.trim();
     if (!/^sk-[A-Za-z0-9_-]{16,}$/.test(v)) { $("keyMsg").className = "msg-bad"; $("keyMsg").textContent = "sk- 로 시작하는 API 키 전체를 붙여넣어 주세요. (앞뒤 공백 없이)"; return; }
     apiKey = v; store.set("tp_key", v); $("apiKey").value = "";
+    renderKey(); renderSetup();
+    if (providerOf(v) === "flow" && !relayUrl) { $("keyMsg").className = "note"; $("keyMsg").textContent = "aiapiflow 키를 저장했어요. 이제 중계 서버 주소를 넣어주세요."; return; }
+    testKey();
+  };
+  $("saveRelay").onclick = () => {
+    let v = $("relayUrl").value.trim();
+    if (v && !/^https?:\/\//.test(v)) v = "https://" + v;
+    if (!/^https:\/\/[^\s/]+\.[^\s/]+/.test(v)) { $("keyMsg").className = "msg-bad"; $("keyMsg").textContent = "https://… 로 시작하는 Cloudflare 주소를 넣어주세요."; return; }
+    relayUrl = v.replace(/\/v1\/?$/, "").replace(/\/+$/, ""); store.set("tp_relay", relayUrl);
     renderKey(); renderSetup(); testKey();
+  };
+  $("copyWorker").onclick = async () => {
+    $("copyMsg").textContent = "불러오는 중…";
+    try {
+      const code = await (await fetch("worker.js", { cache: "no-store" })).text();
+      try { await navigator.clipboard.writeText(code); $("copyMsg").textContent = "복사됐어요 ✓"; }
+      catch {
+        const t = document.createElement("textarea"); t.value = code; t.style.cssText = "width:100%;height:160px;font:12px monospace";
+        $("copyMsg").textContent = "아래 코드를 전체 선택해서 복사하세요."; $("copyMsg").after(t); t.focus(); t.select();
+      }
+    } catch { $("copyMsg").textContent = "코드를 불러오지 못했어요. 새로고침 후 다시 눌러주세요."; }
   };
   $("changeKey").onclick = () => { $("keyEdit").hidden = false; $("keyShow").hidden = true; $("apiKey").focus(); };
   $("testKey").onclick = testKey;
@@ -508,8 +576,9 @@ textarea {
       b.onclick = () => { level = l.id; store.set("tp_level", level); renderSetup(); };
       return b;
     }));
-    $("startBtn").disabled = !scene || !apiKey;
-    $("startNote").textContent = !apiKey ? "먼저 API 키를 저장해주세요." : scene ? `상대역: ${LOOK[scene.id].name} · ${scene.title}` : "상황을 하나 골라주세요.";
+    const relayMissing = providerOf(apiKey) === "flow" && !relayUrl;
+    $("startBtn").disabled = !scene || !apiKey || relayMissing;
+    $("startNote").textContent = !apiKey ? "먼저 API 키를 저장해주세요." : relayMissing ? "중계 서버 주소를 먼저 넣어주세요." : scene ? `상대역: ${LOOK[scene.id].name} · ${scene.title}` : "상황을 하나 골라주세요.";
     const list = store.get("tp_review", []);
     $("reviewWrap").hidden = list.length === 0;
     $("reviewBox").replaceChildren(...list.slice(0, 8).map(c => {
