@@ -227,7 +227,7 @@ textarea {
 <div class="login" id="loginView">
   <form id="loginForm" autocomplete="on">
     <div class="brand">Talk<span>Partner</span></div>
-    <p class="sub">영어 회화 연습 · 로그인</p>
+    <p class="sub">영어 · 베트남어 연습 · 로그인</p>
     <label>아이디 <input type="text" id="loginId" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
     <label>비밀번호 <input type="password" id="loginPw" autocomplete="current-password" required></label>
     <label class="remember"><input type="checkbox" id="loginKeep" checked> 이 아이패드에서 로그인 유지</label>
@@ -349,6 +349,9 @@ textarea {
 
   <!-- FEEDBACK -->
   <section class="wrap feedback" id="feedbackView" hidden></section>
+
+  <!-- STUDY (review, notes, Vietnamese course) -->
+  <section class="wrap study" id="studyView" hidden></section>
 </main>
 
 <div class="composer" id="composer" hidden>
@@ -414,6 +417,7 @@ textarea {
     document.getElementById("loginErr").textContent = "";
     document.getElementById("loginPw").value = "";
     unlock();
+    if (window.TP && window.TP.onLogin) window.TP.onLogin();
   });
   document.getElementById("logoutBtn").addEventListener("click", () => {
     try { localStorage.removeItem("tp_auth_until"); localStorage.removeItem("tp_rtok"); sessionStorage.removeItem("tp_auth"); sessionStorage.removeItem("tp_rtok"); } catch {}
@@ -502,9 +506,9 @@ textarea {
   ];
   const LEVELS_BY_LANG = {
     en: [
-      { id: "basic", label: "기초", rule: "Use very simple, common words and short sentences (A2 level). Speak slowly and clearly." },
-      { id: "mid", label: "중급", rule: "Use everyday natural English (B1-B2 level). Avoid rare idioms." },
-      { id: "adv", label: "실무 원어민", rule: "Speak like a real native professional, natural speed and idioms are fine (C1 level)." },
+      { id: "basic", label: "기초", cap: 15, rule: "Use very simple, common words and short sentences (A2 level)." },
+      { id: "mid", label: "중급", cap: 25, rule: "Use everyday natural English (B1-B2 level). Avoid rare idioms." },
+      { id: "adv", label: "실무 원어민", cap: 35, rule: "Speak like a real native professional, natural speed and idioms are fine (C1 level)." },
     ],
     vi: [
       { id: "zero", label: "왕초보", rule: "The learner is an absolute beginner. Use only the most basic words, ONE short sentence of 3-8 words per turn, and very easy questions (yes/no or one-word answers). Repeat key words often." },
@@ -568,7 +572,40 @@ textarea {
   let relayUrl = store.get("tp_relay", "");
   const relayBase = () => relayUrl.replace(/\/+$/, "");
 
-  async function ask({ system, messages, model = MODEL_CHAT, max_tokens = 400, signal }) {
+  // aiapiflow allows ~10 calls/minute: keep under it and wait instead of failing.
+  const callTimes = [];
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  function waitNotice(ms) {
+    const sec = Math.ceil(ms / 1000);
+    const msg = sec > 0 ? `잠시만요… 호출 제한 때문에 ${sec}초 기다리는 중` : "";
+    if (window.TP && typeof window.TP.onWait === "function") window.TP.onWait(msg);
+    const st = document.getElementById("status"); if (st && view === "chat") st.textContent = msg;
+  }
+  async function rateGate() {
+    if (!["builtin", "flow"].includes(providerOf(apiKey))) return;
+    for (;;) {
+      const now = Date.now();
+      while (callTimes.length && now - callTimes[0] > 60000) callTimes.shift();
+      if (callTimes.length < 9) { callTimes.push(now); return; }
+      const w = 60000 - (now - callTimes[0]) + 400;
+      waitNotice(w); await sleep(Math.min(w, 5000));
+    }
+  }
+  function cleanSpoken(t) {
+    return String(t).replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/(^|\s)_([^_]+)_(?=\s|$)/g, "$1$2")
+      .replace(/[`#]/g, "").replace(/\s*[—–]\s*/g, ", ").replace(/[ \t]{2,}/g, " ").trim();
+  }
+  async function ask(opts) {
+    for (let attempt = 0; ; attempt++) {
+      await rateGate();
+      try { const t = await askOnce(opts); waitNotice(0); return t; }
+      catch (e) {
+        if (e && e.code === "rate" && attempt < 2) { for (let s2 = 45; s2 > 0; s2 -= 5) { waitNotice(s2 * 1000); await sleep(5000); } continue; }
+        waitNotice(0); throw e;
+      }
+    }
+  }
+  async function askOnce({ system, messages, model = MODEL_CHAT, max_tokens = 400, signal, onProgress }) {
     const prov = providerOf(apiKey);
     const wantsJSON = /only JSON/i.test(messages[messages.length - 1].content);
     let url, headers, body;
@@ -579,12 +616,12 @@ textarea {
     } else if (prov === "builtin") {
       url = BUILTIN_RELAY.replace(/\/+$/, "") + "/v1/chat/completions";
       headers = { "content-type": "application/json", "x-tp-token": relayToken() };
-      body = { model: model === MODEL_COACH ? FLOW_MODELS.coach : FLOW_MODELS.chat, max_tokens, messages: [{ role: "system", content: system }, ...messages] };
+      body = { model: model === MODEL_COACH ? FLOW_MODELS.coach : FLOW_MODELS.chat, max_tokens, stream: true, messages: [{ role: "system", content: system }, ...messages] };
     } else if (prov === "flow") {
       if (!relayUrl) throw { code: "norelay" };
       url = relayBase() + "/v1/chat/completions";
       headers = { "content-type": "application/json", "authorization": "Bearer " + apiKey };
-      body = { model: model === MODEL_COACH ? FLOW_MODELS.coach : FLOW_MODELS.chat, max_tokens, messages: [{ role: "system", content: system }, ...messages] };
+      body = { model: model === MODEL_COACH ? FLOW_MODELS.coach : FLOW_MODELS.chat, max_tokens, stream: true, messages: [{ role: "system", content: system }, ...messages] };
     } else {
       url = "https://api.deepseek.com/chat/completions";
       headers = { "content-type": "application/json", "authorization": "Bearer " + apiKey };
@@ -607,6 +644,31 @@ textarea {
       else if (res.status === 529 || res.status >= 500) code = "overloaded";
       throw { code, status: res.status, body: txt };
     }
+    if (body.stream && /event-stream/.test(res.headers.get("content-type") || "")) {
+      // read the streamed answer (keeps long answers from timing out)
+      const reader = res.body.getReader(); const dec = new TextDecoder();
+      let buf = "", out = "";
+      try {
+        for (;;) {
+          const { value, done } = await reader.read(); if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let i;
+          while ((i = buf.indexOf("\n")) >= 0) {
+            const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+            if (!line.startsWith("data:")) continue;
+            const payload = line.slice(5).trim(); if (payload === "[DONE]") continue;
+            try { const j = JSON.parse(payload); const d = j.choices && j.choices[0] && j.choices[0].delta; if (d && d.content) { out += d.content; if (onProgress) onProgress(out); } if (j.error) throw { code: "http", status: 500, body: JSON.stringify(j.error) }; } catch (e) { if (e && e.code) throw e; }
+          }
+        }
+      } catch (e) {
+        if (e && e.name === "AbortError") throw { code: "cancelled" };
+        if (e && e.code) throw e;
+        if (!out) throw { code: "network" };
+      }
+      out = out.trim();
+      if (!out) throw { code: "empty" };
+      return out;
+    }
     const data = await res.json();
     const text = prov === "claude"
       ? (data.content || []).filter(b => b.type === "text").map(b => b.text).join("").trim()
@@ -614,11 +676,33 @@ textarea {
     if (!text) throw { code: "empty" };
     return text;
   }
+  // Inside a JSON string, treat a quote as closing only when JSON syntax follows; otherwise escape it.
+  function escapeStrayQuotes(t) {
+    let out = "", inStr = false;
+    for (let i = 0; i < t.length; i++) {
+      const c = t[i];
+      if (!inStr) { out += c; if (c === '"') inStr = true; continue; }
+      if (c === "\\") { out += c + (t[i + 1] || ""); i++; continue; }
+      if (c === '"') {
+        let j = i + 1; while (j < t.length && /\s/.test(t[j])) j++;
+        if (j >= t.length || ",:}]".includes(t[j])) { out += c; inStr = false; } else out += '\\"';
+        continue;
+      }
+      out += c === "\n" ? "\\n" : c;
+    }
+    return out;
+  }
   function parseJSON(text) {
-    try { return JSON.parse(text); } catch {}
-    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/); if (fence) { try { return JSON.parse(fence[1]); } catch {} }
-    const a = text.indexOf("{"), b = text.lastIndexOf("}");
-    if (a >= 0 && b > a) { try { return JSON.parse(text.slice(a, b + 1)); } catch {} }
+    const tries = [text];
+    const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/); if (fence) tries.push(fence[1]);
+    const a0 = text.indexOf("{"), b0 = text.lastIndexOf("}"); if (a0 >= 0 && b0 > a0) tries.push(text.slice(a0, b0 + 1));
+    for (const t of tries) {
+      try { return JSON.parse(t); } catch {}
+      // repair: "A" or "B"  →  "A / B" ; trailing commas
+      const fixed = t.replace(/"\s+(?:or|\/)\s+"/g, " / ").replace(/,\s*([}\]])/g, "$1");
+      try { return JSON.parse(fixed); } catch {}
+      try { return JSON.parse(escapeStrayQuotes(fixed)); } catch {}
+    }
     throw { code: "json" };
   }
   function errText(e) {
@@ -714,7 +798,7 @@ textarea {
       b.querySelector(".tag").textContent = v.tag; b.lastChild.textContent = v.label;
       b.onclick = () => {
         if (k === lang) return;
-        lang = k; store.set("tp_lang", lang);
+        lang = k; store.set("tp_lang", lang); setTimeout(() => window.TP && window.TP.onLang && window.TP.onLang(lang), 0);
         level = store.get("tp_level_" + lang, lang === "vi" ? "zero" : "mid");
         if (scene && scene.lang !== lang) scene = null;
         renderSetup();
@@ -755,10 +839,12 @@ textarea {
     $("setupView").hidden = v !== "setup";
     $("chatView").hidden = v !== "chat";
     $("feedbackView").hidden = v !== "feedback";
+    const sv = document.getElementById("studyView"); if (sv) sv.hidden = v !== "study";
     $("composer").hidden = v !== "chat";
     $("homeBtn").hidden = v === "setup";
-    $("sceneTag").textContent = v === "setup" || !scene ? "" : scene.title;
+    $("sceneTag").textContent = v === "setup" || v === "study" || !scene ? "" : scene.title;
     $("main").scrollTop = 0;
+    if (v === "setup" && window.TP && window.TP.onRenderSetup) setTimeout(() => window.TP.onRenderSetup(), 0);
   }
 
   // ---------- prompts ----------
@@ -769,7 +855,7 @@ ROLE: ${scene.role}
 LEVEL: ${lv.rule}
 OUTPUT FORMAT — always exactly two lines:
 Line 1: what you say, in Vietnamese only (standard Hà Nội Vietnamese with full diacritics). No romanization, no English.
-Line 2: "KO: " followed by a natural Korean translation of line 1.
+Line 2: "KO: " followed by a natural Korean translation of line 1. In the Korean, address the learner neutrally (e.g. "○○ 씨" or no title) — never 형/오빠/언니/누나.
 RULES:
 - Stay in character the whole time. Keep it short and friendly, like real spoken talk. No lists, markdown, emojis or stage directions.
 - Usually end with a simple question so the learner keeps talking.
@@ -780,7 +866,9 @@ ROLE: ${scene.role}
 LEVEL: ${lv.rule}
 RULES:
 - Stay in character the whole time. Speak only English.
-- Reply with 1 to 3 short spoken sentences, like real talk. No lists, no markdown, no emojis, no stage directions or asterisks.
+- Reply with at most 2 short spoken sentences — ${lv.cap || 25} words maximum in total. This is spoken aloud, so keep it brief.
+- Ask only ONE question per turn. Never stack several questions.
+- No lists, no markdown, no emojis, no asterisks or emphasis marks, no stage directions.
 - Usually end with a question or prompt so the learner keeps talking.
 - Do NOT correct the learner's grammar during the conversation. If you don't understand, ask naturally like a real person would.
 - If the learner speaks Korean, gently reply in English and keep the scene going.`;
@@ -825,6 +913,7 @@ RULES:
     listen.onclick = () => speak(text, { force: true, thenListen: handsfree() });
     const tr = document.createElement("button"); tr.className = "mini"; tr.textContent = "한국어 뜻";
     const ko = document.createElement("div"); ko.className = "ko"; ko.hidden = true;
+    if (koText && !/[가-힣]/.test(koText)) koText = "";
     if (koText) { ko.textContent = koText; if (isVi() && level !== "mid") { ko.hidden = false; ko.classList.add("auto"); } }
     tr.onclick = async () => {
       if (!ko.hidden) { ko.hidden = true; return; }
@@ -866,7 +955,7 @@ RULES:
     bubble.classList.add("thinking"); setState("think");
     ctl = new AbortController();
     try {
-      const raw = await ask({ system: rules(), messages: apiMessages(), max_tokens: 300, signal: ctl.signal });
+      const raw = cleanSpoken(await ask({ system: rules(), messages: apiMessages(), max_tokens: 300, signal: ctl.signal }));
       const { vi, ko } = isVi() ? splitVi(raw) : { vi: raw, ko: "" };
       const text = vi;
       bubble.classList.remove("thinking"); bubble.textContent = text;
@@ -909,8 +998,8 @@ RULES:
     try {
       const text = await ask({
         system: rules() + "\n\nNow you are NOT the character. You are a helper suggesting what the learner could say.",
-        messages: [{ role: "user", content: `Conversation so far:\n${turns.slice(-8).map(t => (t.role === "user" ? "Learner: " : "Partner: ") + t.content).join("\n")}\n\nSuggest 2 different natural replies the LEARNER could say next to "${last ? last.content : ""}", in ${LANGS[lang].name}, matching the level (short!). Reply with only JSON: ${isVi() ? '{"options":[{"t":"Vietnamese sentence with diacritics","read":"한글로 적은 발음 (예: 씬 짜오)","ko":"한국어 뜻"}]}' : '{"options":[{"t":"English sentence","ko":"한국어 뜻"}]}'}` }],
-        max_tokens: 400,
+        messages: [{ role: "user", content: `Conversation so far:\n${turns.slice(-8).map(t => (t.role === "user" ? "Learner: " : "Partner: ") + t.content).join("\n")}\n\nSuggest 2 different natural replies the LEARNER could say next to "${last ? last.content : ""}", in ${LANGS[lang].name}, matching the level. Each reply MUST be 12 words or fewer and easy to say aloud. Reply with only JSON: ${isVi() ? '{"options":[{"t":"Vietnamese sentence with diacritics","read":"Korean Hangul pronunciation of the WHOLE sentence, Hangul only, e.g. 씬 짜오 아잉","ko":"한국어 뜻"}]}' : '{"options":[{"t":"English sentence","ko":"한국어 뜻"}]}'}` }],
+        max_tokens: 400, model: isVi() ? MODEL_COACH : MODEL_CHAT,
       });
       const data = parseJSON(text);
       const opts = Array.isArray(data.options) ? data.options.slice(0, 3) : [];
@@ -922,7 +1011,7 @@ RULES:
         const en = document.createElement("b"); en.textContent = say;
         const ko = document.createElement("span"); ko.textContent = String(o.ko || "");
         b.append(en);
-        if (o.read) { const r = document.createElement("span"); r.className = "read"; r.textContent = "발음 · " + String(o.read); b.append(r); }
+        if (o.read && /[가-힣]/.test(o.read)) { const r = document.createElement("span"); r.className = "read"; r.textContent = "발음 · " + String(o.read); b.append(r); }
         b.append(ko);
         b.onclick = () => { $("input").value = say; autoGrow(); updateSend(); speak(say, { force: true, thenListen: false }); };
         return b;
@@ -943,7 +1032,8 @@ RULES:
     try {
       const viCoach = isVi();
       const text = await ask({
-        model: MODEL_COACH, max_tokens: 2500,
+        model: MODEL_COACH, max_tokens: 4000,
+        onProgress: (t) => { const p = fv.querySelector(".note"); if (p) p.textContent = `교정 노트를 작성하고 있어요… (${t.length}자)`; },
         system: viCoach
           ? "You are a kind Vietnamese teacher for a Korean beginner. The learner spoke by voice through Vietnamese speech recognition, so ignore obvious recognition glitches and focus on word choice, word order, missing words, pronouns/politeness (anh/chị/em), and natural phrasing. Lines the learner said in Korean or English count as 'didn't know how to say it': give the Vietnamese for them."
           : "You are an English speaking coach for a Korean manufacturing engineer. The learner spoke by voice, so ignore obvious speech-recognition glitches (missing punctuation, homophones) and focus on real grammar, word choice and naturalness.",
@@ -954,9 +1044,16 @@ ${transcript}
 Return only JSON in this shape:
 {"score": 0-100 (communication + accuracy + naturalness${viCoach ? ", be encouraging for a beginner" : ""}),
  "summary_ko": "2문장 이내 한국어 총평 (잘한 점 1개, 고칠 점 1개)",
- "corrections": [{"original": "learner's sentence", "better": "corrected, natural ${LANGS[lang].name} version"${viCoach ? ', "read": "better 문장의 한글 발음"' : ""}, "why_ko": "짧은 한국어 설명"}],
- "expressions": [{"t": "useful ${LANGS[lang].name} phrase for this scene"${viCoach ? ', "read": "한글 발음"' : ""}, "ko": "한국어 뜻"}]}
-Include every learner sentence that has an error, sounds unnatural${viCoach ? ", or was said in Korean/English" : ""} (max 8). Skip sentences that are already fine. Give ${viCoach ? "5 very useful beginner" : "4"} expressions a native speaker would use in this scene.` }],
+ "corrections": [{"original": "learner's sentence", "better": "corrected, natural ${LANGS[lang].name} version"${viCoach ? ', "read": "better 문장의 한글 발음"' : ""}, "ko": "better 문장의 한국어 뜻", "why_ko": "짧은 한국어 설명"}],
+ "expressions": [{"t": "useful ${LANGS[lang].name} phrase for this scene"${viCoach ? ', "read": "한글 발음"' : ""}, "ko": "한국어 뜻"}],
+ "patterns": [{"frame": "reusable sentence frame with ___ slots, taken from what the learner needed (e.g. Could you send me ___ by ___?)", "ko": "틀의 한국어 뜻 (___ 자리 표시)", "use_ko": "언제 쓰는지 한 줄", "examples": [{"t": "frame filled with different words", "ko": "한국어 뜻"}]}],
+ "script": [{"who": "partner or me", "t": "line", "ko": "한국어 뜻"}]}
+Rules:
+- corrections: the 5 MOST important problems only, most important first. "better" must keep what the learner meant — fix the language, never invent new content or answers he did not give. One correction per learner sentence. Every learner sentence that was said in Korean/English must be included${viCoach ? "" : " if any"}. why_ko is required for each.
+- patterns: 2-3 frames the learner can reuse by swapping words; each with exactly 3 examples using different words.
+- script: the whole conversation rewritten as a model dialogue: partner lines as they were, the learner's lines replaced by the corrected natural version (keep the learner's meaning). Max 12 lines.
+- Every value is ONE JSON string. Never write "A" or "B" — put alternatives in one string separated by " / ". Use 「 」 instead of double quotes inside Korean text.
+- Give ${viCoach ? "5 very useful beginner" : "4"} expressions a native speaker would use in this scene.` }],
       });
       renderFeedback(parseJSON(text));
     } catch (e) {
@@ -968,7 +1065,8 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
   }
   function renderFeedback(d) {
     const fv = $("feedbackView"); fv.replaceChildren();
-    const corrections = Array.isArray(d.corrections) ? d.corrections.filter(c => c && c.better) : [];
+    const corrections = (Array.isArray(d.corrections) ? d.corrections.filter(c => c && c.better) : []).slice(0, 5);
+    const patterns = (Array.isArray(d.patterns) ? d.patterns.filter(x => x && x.frame) : []).slice(0, 3);
     const exprs = Array.isArray(d.expressions) ? d.expressions : [];
     const score = Math.max(0, Math.min(100, Math.round(Number(d.score) || 0)));
     const head = document.createElement("div"); head.className = "fb-head";
@@ -1014,8 +1112,37 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
       });
       s2.append(grid); fv.append(s2);
     }
+    if (patterns.length) {
+      const s3 = document.createElement("div"); s3.className = "fb-section";
+      const h3 = document.createElement("h3"); h3.textContent = "외워두면 단어만 바꿔 쓰는 문장 틀"; s3.append(h3);
+      const grid = document.createElement("div"); grid.className = "corr";
+      patterns.forEach(pt => {
+        const it = document.createElement("div"); it.className = "corr-item";
+        const f = document.createElement("div"); f.className = "new"; f.textContent = String(pt.frame);
+        const k = document.createElement("div"); k.className = "why"; k.textContent = String(pt.ko || "") + (pt.use_ko ? " · " + pt.use_ko : "");
+        it.append(f, k);
+        (pt.examples || []).slice(0, 3).forEach(ex => {
+          const b = document.createElement("button"); b.className = "mini"; b.style.textAlign = "left";
+          b.textContent = "▶ " + String(ex.t || "") + (ex.ko ? "  — " + ex.ko : ""); b.onclick = () => speak(String(ex.t || ""), { force: true });
+          it.append(b);
+        });
+        grid.append(it);
+      });
+      s3.append(grid); fv.append(s3);
+    }
+    const note = window.TP && window.TP.makeNote ? window.TP.makeNote({ lang, level, scene, d: { ...d, corrections, patterns }, turns }) : null;
+    if (note) {
+      const saved = document.createElement("div"); saved.className = "empty-good"; saved.id = "savedMsg";
+      saved.textContent = `학습 노트를 저장했어요 · 복습 카드 ${note.cardCount}개 추가`;
+      fv.append(saved);
+    }
     const acts = document.createElement("div"); acts.className = "fb-actions";
-    const again = document.createElement("button"); again.className = "primary"; again.textContent = "같은 상황 다시 하기"; again.onclick = startChat;
+    if (note) {
+      const pdf = document.createElement("button"); pdf.className = "primary"; pdf.textContent = "PDF로 내보내기 (굿노트)"; pdf.onclick = () => window.TP.exportPDF(note);
+      acts.append(pdf);
+      if ((note.script || []).length) { const rh = document.createElement("button"); rh.className = "ghost"; rh.textContent = "대본 리허설"; rh.onclick = () => window.TP.openRehearsal(note); acts.append(rh); }
+    }
+    const again = document.createElement("button"); again.className = "ghost"; again.textContent = "같은 상황 다시 하기"; again.onclick = startChat;
     const home = document.createElement("button"); home.className = "ghost"; home.textContent = "다른 상황 고르기"; home.onclick = () => { show("setup"); renderSetup(); };
     acts.append(again, home); fv.append(acts);
     const prev = store.get("tp_review", []);
@@ -1025,14 +1152,14 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
   // ---------- speech out ----------
   const VOICE_F = /Samantha|Ava|Allison|Susan|Zoe|Nicky|Joelle|Jenny|Aria|Female/i;
   const VOICE_M = /Aaron|Alex|Tom|Fred|Evan|Nathan|Guy|Davis|Male/i;
-  function pickVoice() {
+  function pickVoice(L, femaleOverride) {
     if (!window.speechSynthesis) return null;
-    if (isVi()) {
+    if ((L || lang) === "vi") {
       const vv = speechSynthesis.getVoices().filter(v => /^vi/i.test(v.lang));
       return vv.find(v => /Linh|Premium|Enhanced/i.test(v.name)) || vv[0] || null;
     }
     const vs = speechSynthesis.getVoices().filter(v => /^en[-_]US/i.test(v.lang));
-    const female = scene && LOOK[scene.id].female;
+    const female = femaleOverride !== undefined ? femaleOverride : (scene && LOOK[scene.id].female);
     return vs.find(v => (female ? VOICE_F : VOICE_M).test(v.name)) || vs.find(v => /Samantha|Google US English/i.test(v.name)) || vs[0] || null;
   }
   if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {};
@@ -1041,15 +1168,17 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
     if (!window.speechSynthesis) return;
     try { speechSynthesis.cancel(); } catch {}
   }
-  function speak(text, { force = false, thenListen = false } = {}) {
-    const next = () => { if (thenListen && handsfree() && view === "chat" && !busy) setTimeout(() => startListening(), 300); };
-    if (!window.speechSynthesis || (!force && $("autoSpeak").value !== "1")) { next(); return; }
+  function speak(text, { force = false, thenListen = false, lang: L, rate: R, female } = {}) {
+    let resolveDone; const donePromise = new Promise(r => { resolveDone = r; });
+    const next = () => { resolveDone(); if (thenListen && handsfree() && view === "chat" && !busy) setTimeout(() => startListening(), 300); };
+    if (!window.speechSynthesis || (!force && $("autoSpeak").value !== "1")) { next(); return donePromise; }
     stopListening();
     if (speakDone) speakDone(true);
     cancelSpeech();
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = LANGS[lang].speech; const v = pickVoice(); if (v) u.voice = v;
-    u.rate = (Number($("rate").value) || 0.95) * (isVi() && level === "zero" ? 0.85 : 1);
+    const LL = L || lang;
+    u.lang = LANGS[LL].speech; const v = pickVoice(LL, female); if (v) u.voice = v;
+    u.rate = R || (Number($("rate").value) || 0.95) * (LL === "vi" && level === "zero" ? 0.85 : 1);
     let done = false;
     const finish = (silent) => {
       if (done) return; done = true; speakDone = null;
@@ -1065,6 +1194,7 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
     speakWatch = setInterval(() => {   // Safari sometimes skips onend
       if (Date.now() - t0 > 1500 && !speechSynthesis.speaking && !speechSynthesis.pending) finish(false);
     }, 400);
+    return donePromise;
   }
   function interruptAndListen() {
     if (speakDone) { const f = speakDone; cancelSpeech(); f(true); }
@@ -1172,13 +1302,55 @@ Include every learner sentence that has an error, sounds unnatural${viCoach ? ",
     startChat();
   };
   $("homeBtn").onclick = () => {
+    if (window.TP && window.TP.onHome) window.TP.onHome();
     if (ctl) ctl.abort(); stopListening(); cancelSpeech(); busy = false;
     show("setup"); renderSetup();
   };
   document.addEventListener("visibilitychange", () => { if (document.hidden) { stopListening(); cancelSpeech(); if (view === "chat") setState("paused"); } });
 
+  // One-shot listening for review modes: resolves with what was heard after a pause.
+  function listenOnce({ lang: L, onInterim, maxMs = 12000, silenceMs = 1700 } = {}) {
+    return new Promise((resolve, reject) => {
+      if (!SR) { reject({ code: "nosr" }); return; }
+      stopListening(); cancelSpeech();
+      let r; try { r = new SR(); } catch { reject({ code: "mic" }); return; }
+      r.lang = LANGS[L || lang].speech; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+      let text = "", timer = null, done = false;
+      const finish = () => { if (done) return; done = true; clearTimeout(timer); clearTimeout(hard); try { r.stop(); } catch {} listenOnce.stop = null; resolve(text.trim()); };
+      const hard = setTimeout(finish, maxMs);
+      r.onresult = (ev) => {
+        let t = ""; for (let i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+        text = t; if (onInterim) onInterim(text);
+        clearTimeout(timer); timer = setTimeout(finish, silenceMs);
+      };
+      r.onerror = (ev) => {
+        if (ev.error === "not-allowed" || ev.error === "service-not-allowed" || ev.error === "audio-capture") { done = true; clearTimeout(hard); reject({ code: "mic" }); }
+      };
+      r.onend = () => finish();
+      listenOnce.stop = finish;
+      try { r.start(); } catch { done = true; clearTimeout(hard); reject({ code: "mic" }); }
+    });
+  }
+
+  window.TP = Object.assign(window.TP || {}, {
+    ask, parseJSON, cleanSpoken, speak, cancelSpeech, listenOnce, store, relayToken, errText, avatar,
+    LANGS, LOOK, SCENES, MODEL_CHAT, MODEL_COACH, BUILTIN_RELAY,
+    hasSR: !!SR,
+    getLang: () => lang, getLevel: () => level,
+    connected: () => !!apiKey || !!BUILTIN_RELAY,
+    useBuiltin: () => providerOf(apiKey) === "builtin",
+    show, renderSetup,
+    startScene(id) {
+      const sc = SCENES.find(x => x.id === id); if (!sc) return;
+      scene = sc; if (lang !== sc.lang) { lang = sc.lang; store.set("tp_lang", lang); }
+      startChat();
+    },
+  });
   renderKey(); renderSetup(); show("setup");
+  document.dispatchEvent(new Event("tp-ready"));
 })();
 </script>
+<script src="vi-course.js"></script>
+<script src="study.js"></script>
 </body>
 </html>
