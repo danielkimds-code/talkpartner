@@ -4,6 +4,7 @@
   const TP = window.TP;
   if (!TP) return;
   const COURSE = window.VI_COURSE || [];
+  const EN = window.EN_COURSE || [];
   const DAY = 864e5;
   const BOX_DAYS = [0, 1, 3, 7, 14, 30];
   const $ = (id) => document.getElementById(id);
@@ -90,8 +91,9 @@
 
   // ---------- state + cloud sync ----------
   const LKEY = "tp_state_v1";
-  const blank = () => ({ v: 1, updatedAt: 0, notes: [], cards: [], vi: { done: {} } });
-  let S = (() => { try { return Object.assign(blank(), JSON.parse(localStorage.getItem(LKEY) || "null") || {}); } catch { return blank(); } })();
+  const blank = () => ({ v: 1, updatedAt: 0, notes: [], cards: [], vi: { done: {} }, en: { done: {}, reh: {}, talk: {} } });
+  const fixShape = (o) => { o.vi = o.vi || { done: {} }; o.en = Object.assign({ done: {}, reh: {}, talk: {} }, o.en || {}); return o; };
+  let S = (() => { try { return fixShape(Object.assign(blank(), JSON.parse(localStorage.getItem(LKEY) || "null") || {})); } catch { return blank(); } })();
   let syncState = "local", saveTimer = null;
   const cloudURL = () => TP.BUILTIN_RELAY ? TP.BUILTIN_RELAY.replace(/\/+$/, "") + "/store/state" : "";
   const cloudOn = () => !!(cloudURL() && TP.useBuiltin() && TP.relayToken());
@@ -122,7 +124,7 @@
       if (!r.ok) { setSync("error"); return; }
       const remote = await r.json();
       if (remote && remote.updatedAt > (S.updatedAt || 0)) {
-        S = Object.assign(blank(), remote);
+        S = fixShape(Object.assign(blank(), remote));
         try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch {}
       } else if ((S.updatedAt || 0) > ((remote && remote.updatedAt) || 0)) { persist(); return; }
       setSync("saved"); refreshHome();
@@ -147,7 +149,7 @@
   }
 
   // ---------- study note from a finished conversation (called by the app) ----------
-  TP.makeNote = ({ lang, level, scene, d, turns }) => {
+  TP.makeNote = ({ lang, level, scene, d, turns, lessonId }) => {
     const look = TP.LOOK[scene.id] || {};
     const script = (Array.isArray(d.script) ? d.script : []).filter(x => x && x.t).slice(0, 14)
       .map(x => ({ who: /me|learner/i.test(x.who) ? "me" : "partner", t: TP.cleanSpoken(x.t), ko: hasHangul(x.ko) ? x.ko : "" }));
@@ -165,19 +167,54 @@
     for (const p of note.patterns) for (const e of p.examples) n += addCard({ lang, kind: "pat", t: e.t, ko: e.ko, frame: p.frame, frameKo: p.ko, ...src }) ? 1 : 0;
     for (const x of note.expressions.slice(0, 4)) n += addCard({ lang, kind: "expr", t: x.t, ko: x.ko, read: x.read, ...src }) ? 1 : 0;
     note.cardCount = n;
+    note.targets = (Array.isArray(d.targets) ? d.targets : []).filter(x => x && x.t).map(x => ({ t: x.t, used: !!x.used, said: x.said || "" }));
+    if (lessonId) { note.lessonId = lessonId; S.en.talk[lessonId] = { date: Date.now(), score: note.score }; }
     S.notes.unshift(note); S.notes = S.notes.slice(0, 200);
     persist();
     return note;
   };
 
+  // expressions the learner has studied (used by free talk prompts)
+  TP.learnedTargets = (lang) => {
+    if (lang !== "en") return [];
+    const out = [];
+    for (const L of EN) if (S.en.done[L.id]) for (const g of L.grammar) out.push(`${g.form} (e.g. ${g.ex[0].t})`);
+    return out.slice(-12);
+  };
+  TP.lessonById = (id) => EN.find(l => l.id === id) || null;
+
+  // ---------- AI instant feedback ----------
+  // Judges an answer that did not match the model sentence: accepts natural alternatives, explains real mistakes.
+  async function aiJudge({ lang, target, said, ko, grammar, context }) {
+    const L = lang === "vi" ? "Vietnamese" : "English";
+    const prompt = `The learner (a Korean engineer) had to say this in ${L}. Meaning (Korean): "${ko || ""}". Model answer: "${target}".${grammar ? ` Target grammar: ${grammar}.` : ""}${context ? ` Context: ${context}` : ""}
+The learner actually said (from speech recognition, punctuation and capitals may be missing): "${said}".
+Judge it. ok = true if the learner's sentence is natural and grammatically correct and keeps the same meaning — different wording is fine${grammar ? ", but it should still use the target grammar" : ""}. Ignore capitalization, punctuation and obvious recognition glitches.
+Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentences: what was good, what was wrong and why", "better": "the learner's own sentence fixed naturally (keep their words when possible)", "tip_ko": "one short Korean grammar tip, or empty"}`;
+    try {
+      const text = await TP.ask({ system: "You are a kind, precise speaking coach. Reply with only JSON.", messages: [{ role: "user", content: prompt }], max_tokens: 350 });
+      const j = TP.parseJSON(text);
+      return { ok: !!j.ok, feedback: String(j.feedback_ko || ""), better: TP.cleanSpoken(String(j.better || "")), tip: String(j.tip_ko || "") };
+    } catch (e) { return { error: TP.errText(e) }; }
+  }
+  function aiBox(j, lang) {
+    if (j.error) return h("div", { class: "ai-box warn" }, h("b", { text: "AI 피드백을 받지 못했어요" }), h("div", { class: "note", text: j.error }));
+    return h("div", { class: "ai-box" + (j.ok ? " ok" : "") },
+      h("div", { class: "ai-tag", text: j.ok ? "AI 코치 · 이렇게 말해도 자연스러워요" : "AI 코치" }),
+      j.feedback ? h("div", { text: j.feedback }) : null,
+      j.better ? h("div", { class: "ai-better" }, h("span", { text: j.better }), h("button", { class: "mini", text: "▶", onclick: () => say(j.better, lang) })) : null,
+      j.tip ? h("div", { class: "note", text: "💡 " + j.tip }) : null);
+  }
+  const thinking = (t = "AI 코치가 확인하는 중…") => h("div", { class: "ai-box wait" }, h("span", { class: "dots" }), t);
+
   // ---------- home tabs ----------
   const TABS = {
-    en: [["talk", "💬 대화 연습"], ["review", "🔁 복습"], ["notes", "📒 내 노트"]],
-    vi: [["course", "🌱 기초 코스"], ["review", "🔁 복습"], ["talk", "💬 회화 (중급)"]],
+    en: [["course", "코스"], ["review", "복습"], ["talk", "자유 대화"], ["notes", "내 노트"]],
+    vi: [["course", "기초 코스"], ["review", "복습"], ["talk", "회화 (중급)"]],
   };
   let tab = null;
-  const getTab = (lang) => { try { return localStorage.getItem("tp_tab_" + lang) || (lang === "vi" ? "course" : "talk"); } catch { return lang === "vi" ? "course" : "talk"; } };
-  function setTab(t) { const lang = TP.getLang(); tab = t; try { localStorage.setItem("tp_tab_" + lang, t); } catch {} refreshHome(); }
+  const getTab = (lang) => { try { return localStorage.getItem("tp_tab2_" + lang) || "course"; } catch { return "course"; } };
+  function setTab(t) { const lang = TP.getLang(); tab = t; try { localStorage.setItem("tp_tab2_" + lang, t); } catch {} refreshHome(); }
 
   function refreshHome() {
     const setup = $("setupView"); if (!setup) return;
@@ -201,10 +238,12 @@
     }
     panel.hidden = talkMode;
     const lead = $("setupLead");
+    if (lang === "en" && tab === "course") { $("setupTitle").textContent = "배우고, 연습하고, 그다음에 대화해요."; lead.textContent = "레슨마다 문법 → 대화문 듣기 → 따라 말하기 → 퀴즈 → 대본 리허설 → 실전 대화 순서예요. 대본과 다르게 말해도 AI 코치가 바로 봐 드려요."; }
+    if (lang === "en" && tab === "talk") { $("setupTitle").textContent = "자유 대화"; lead.textContent = "대본 없이 대화해요. 코스에서 배운 표현을 AI가 알고 있어서, 쓸 기회를 만들어 주고 끝나면 썼는지 체크해 드려요."; }
     if (lang === "vi" && tab === "course") { $("setupTitle").textContent = "Xin chào! 베트남어 첫걸음"; lead.textContent = "글자를 못 읽어도 괜찮아요. 소리를 듣고 → 따라 하고 → 뜻을 고르면서 단어부터 익혀요. 큰 글씨는 한글 발음, 화살표는 성조(말의 높낮이)예요."; }
     if (tab === "review") lead.textContent = "틀린 문장과 배운 표현이 1 · 3 · 7 · 14 · 30일 간격으로 다시 나와요. 맞히면 간격이 늘고, 틀리면 바로 다시 나와요.";
     if (tab === "notes") lead.textContent = "대화가 끝날 때마다 교정 노트가 저장돼요. 다시 보기, 대본 리허설, 굿노트용 PDF를 여기서 할 수 있어요.";
-    if (!talkMode) rc(panel, tab === "course" ? coursePanel() : tab === "review" ? reviewPanel(lang) : notesPanel(lang));
+    if (!talkMode) rc(panel, tab === "course" ? (lang === "en" ? enCoursePanel() : coursePanel()) : tab === "review" ? reviewPanel(lang) : notesPanel(lang));
   }
   TP.onRenderSetup = refreshHome;
   TP.onLang = () => { tab = getTab(TP.getLang()); refreshHome(); };
@@ -299,18 +338,33 @@
     if (card.old) hintBox.append(h("div", { class: "old", text: "전에 내가 한 말: " + card.old }));
     const res = h("div", { class: "q-res" });
     let answered = false;
-    const onResult = (said) => {
+    const onResult = async (said) => {
       if (answered) return;
       const r = check(card.alt || card.t, said, lang);
-      rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "좋아요! 맞았어요" : "조금 달라요" }),
-        h("div", { class: "note", text: "내가 말한 것: " + said }), h("div", { class: "note", text: "정답:" }), diffView(r),
-        card.read ? readBlock(card.t, card.read, false) : null,
-        h("div", { class: "fb-actions" },
-          h("button", { class: "mini", text: "▶ 정답 듣기", onclick: () => say(card.t, lang) }),
-          r.pass ? null : h("button", { class: "mini", text: "맞은 걸로 할게요", onclick: () => { answered = true; done(true); } }),
-          r.pass ? null : h("button", { class: "ghost sm", text: "다음", onclick: () => { answered = true; done(false); } })));
-      say(card.t, lang);
-      if (r.pass) { answered = true; done(true); }
+      const actions = h("div", { class: "fb-actions" },
+        h("button", { class: "mini", text: "▶ 정답 듣기", onclick: () => say(card.t, lang) }));
+      const aiSlot = h("div");
+      rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "좋아요! 맞았어요" : "정답과 조금 달라요" }),
+        h("div", { class: "note", text: "내가 말한 것: " + said }), h("div", { class: "note", text: "모범 답:" }), diffView(r),
+        card.read ? readBlock(card.t, card.read, false) : null, aiSlot, actions);
+      if (r.pass) { answered = true; say(card.t, lang); done(true); return; }
+      if (card.kind === "vi") { // beginner word cards: no AI, just show the answer
+        say(card.t, lang);
+        actions.append(h("button", { class: "mini", text: "맞은 걸로 할게요", onclick: () => { answered = true; done(true); } }), h("button", { class: "ghost sm", text: "다음", onclick: () => { answered = true; done(false); } }));
+        return;
+      }
+      rc(aiSlot, thinking());
+      const j = await aiJudge({ lang, target: card.t, said, ko: card.ko, grammar: card.frame || "", context: card.src ? "scene: " + card.src : "" });
+      if (answered) return;
+      rc(aiSlot, aiBox(j, lang));
+      if (j.ok) {
+        res.querySelector(".verdict").textContent = "다르게 말했지만 자연스러워요 👍"; res.querySelector(".verdict").className = "verdict ok";
+        actions.append(h("button", { class: "primary sm", text: "다음", onclick: () => { answered = true; done(true); } }));
+      } else {
+        say(card.t, lang);
+        actions.append(h("button", { class: "mini", text: "맞은 걸로 할게요", onclick: () => { answered = true; done(true); } }),
+          h("button", { class: "ghost sm", text: "다음", onclick: () => { answered = true; done(false); } }));
+      }
     };
     wrap.append(prompt, h("div", { class: "fb-actions" },
       h("button", { class: "mini", text: "💡 힌트", onclick: () => { hintBox.hidden = !hintBox.hidden; } }),
@@ -378,73 +432,371 @@
       h("div", {}, h("div", { class: "st", text: showAll || l.who === "partner" ? l.t : "" }), l.ko ? h("div", { class: "sk", text: l.ko }) : null))));
   }
 
-  // ---------- script rehearsal ----------
+  // one spoken (or typed) line from the learner
+  function askLine(lang, status, row) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const input = row.querySelector("input"), okBtn = row.querySelector(".ok"), micBtn = row.querySelector(".mic-mini");
+      input.value = ""; row.hidden = false;
+      const fin = (t) => { if (settled) return; settled = true; row.hidden = true; try { TP.listenOnce.stop && TP.listenOnce.stop(); } catch {} resolve(t); };
+      okBtn.onclick = () => { const v = input.value.trim(); if (v) fin(v); };
+      input.onkeydown = (e) => { if (e.key === "Enter") okBtn.click(); };
+      const listen = () => {
+        if (!TP.hasSR) { status.textContent = "아래에 내 대사를 입력하세요."; micBtn.hidden = true; return; }
+        micBtn.classList.add("on");
+        TP.listenOnce({ lang, onInterim: (t) => { status.textContent = "듣는 중: " + t; } })
+          .then((t) => { micBtn.classList.remove("on"); if (settled) return; if (t) fin(t); else status.textContent = "소리가 안 들렸어요. 🎤를 누르거나 입력하세요."; })
+          .catch(() => { micBtn.classList.remove("on"); if (!settled) status.textContent = "마이크를 쓸 수 없어요. 아래에 입력하세요."; });
+      };
+      micBtn.onclick = () => { if (micBtn.classList.contains("on")) { TP.listenOnce.stop && TP.listenOnce.stop(); } else listen(); };
+      listen();
+    });
+  }
+  async function aiRehearse(n, i, said) {
+    const l = n.script[i];
+    const script = n.script.map((x, k) => `${k === i ? ">> " : ""}${x.who === "me" ? "LEARNER" : "PARTNER"}: ${x.t}`).join("\n");
+    const next = n.script.slice(i + 1).find(x => x.who === "partner");
+    const prompt = `Scripted role-play rehearsal ("${n.sceneTitle}"). Script:
+${script}
+
+At the line marked >>, the learner should say: "${l.t}"${l.ko ? ` (meaning: ${l.ko})` : ""}.
+The learner actually said (speech recognition, punctuation may be missing): "${said}".
+${next ? `The next scripted partner line is: "${next.t}".` : "This was the learner's last line."}
+Return only JSON: {"ok": true if the learner's sentence is natural, correct and keeps the meaning of the scripted line (different words are fine), "feedback_ko": "1-2 short Korean sentences: what was good / wrong and why", "better": "the learner's sentence fixed naturally (keep their words when possible)", "off_script": true only if the learner's meaning is different so the next scripted partner line would not fit, "partner_reply": "only when off_script: what the partner says in character (max 20 words) to answer the learner naturally and steer back so the next scripted line still fits; otherwise empty"}`;
+    try {
+      const t = await TP.ask({ system: "You are a kind, precise English speaking coach and role-play partner. Reply with only JSON.", messages: [{ role: "user", content: prompt }], max_tokens: 400 });
+      const j = TP.parseJSON(t);
+      return { ok: !!j.ok, feedback: String(j.feedback_ko || ""), better: TP.cleanSpoken(String(j.better || "")), offScript: !!j.off_script, reply: TP.cleanSpoken(String(j.partner_reply || "")) };
+    } catch (e) { return { error: TP.errText(e) }; }
+  }
+
+  // ---------- script rehearsal (adapts when the learner goes off script) ----------
   const LEVELS = [["see", "보면서"], ["first", "첫 단어만"], ["blind", "안 보고"]];
   TP.openRehearsal = (n) => {
-    let lvl = (n.rehearsal && n.rehearsal.next) || "see";
+    n.rehearsal = n.rehearsal || {};
+    let lvl = n.rehearsal.next || "see";
     const lang = n.lang, female = (TP.LOOK[n.sceneId] || {}).female;
     const seg = h("div", { class: "levels" });
     const lines = h("div", { class: "script rh" });
-    const status = h("div", { class: "note" });
+    const status = h("div", { class: "rh-status" });
+    const row = h("div", { class: "typed rh-input", hidden: true },
+      h("button", { class: "mic-mini", text: "🎤", "aria-label": "다시 말하기" }),
+      h("input", { type: "text", placeholder: "말하거나, 여기에 입력하세요", autocapitalize: "off", spellcheck: "false" }),
+      h("button", { class: "ghost sm ok", text: "확인" }));
     const ctrl = h("div", { class: "fb-actions" });
     const sv = openStudy(`대본 리허설 · ${n.sceneTitle}`,
-      h("p", { class: "note", text: `${n.partner || "상대"}의 대사는 소리로 읽어 드려요. 「나」 차례가 오면 외운 문장을 말하세요.` }), seg, lines, status, ctrl);
+      h("p", { class: "note", text: `${n.partner || "상대"}의 대사는 소리로 읽어 드려요. 「나」 차례에 외운 문장을 말하세요. 대본과 다르게 말해도 AI 코치가 판단해서, 뜻이 통하면 인정하고 상대가 그에 맞춰 받아줘요.` }),
+      seg, lines, h("div", { class: "rh-dock" }, status, row), ctrl);
     function drawSeg() { rc(seg, ...LEVELS.map(([k, t]) => h("button", { class: "seg", "aria-pressed": String(k === lvl), text: t, onclick: () => { lvl = k; drawSeg(); draw(-1); } }))); }
-    function cue(t) { const w = t.split(/\s+/); return lvl === "see" ? t : lvl === "first" ? w[0] + " " + w.slice(1).map(x => "＿".repeat(Math.min(4, Math.max(2, x.length / 2)))).join(" ") : "🎤 내 차례"; }
-    const marks = {};
+    function cue(t) { const w = t.split(/\s+/); return lvl === "see" ? t : lvl === "first" ? w[0] + " " + w.slice(1).map(x => "＿".repeat(Math.min(4, Math.max(2, Math.round(x.length / 2))))).join(" ") : "🎤 내 차례"; }
+    const marks = {}, fbs = {}, adlib = {}, saidMap = {};
     function draw(cur) {
-      rc(lines, ...n.script.map((l, i) => h("div", { class: "sl " + l.who + (i === cur ? " cur" : "") + (marks[i] ? " " + marks[i] : "") },
-        h("span", { class: "who", text: l.who === "me" ? "나" : (n.partner || "상대") }),
-        h("div", {}, h("div", { class: "st", text: l.who === "partner" ? l.t : (marks[i] ? l.t : cue(l.t)) }), (l.ko && (l.who === "partner" || lvl !== "see")) ? h("div", { class: "sk", text: l.ko }) : null))));
-      const c = lines.children[cur]; if (c) c.scrollIntoView({ block: "center", behavior: "smooth" });
+      const kids = [];
+      n.script.forEach((l, i) => {
+        kids.push(h("div", { class: "sl " + l.who + (i === cur ? " cur" : "") + (marks[i] ? " " + marks[i] : "") },
+          h("span", { class: "who", text: l.who === "me" ? "나" : (n.partner || "상대") }),
+          h("div", {}, h("div", { class: "st", text: l.who === "partner" ? l.t : (marks[i] ? l.t : cue(l.t)) }),
+            saidMap[i] && saidMap[i] !== l.t ? h("div", { class: "said", text: "내가 한 말: " + saidMap[i] }) : null,
+            (l.ko && (l.who === "partner" || lvl !== "see")) ? h("div", { class: "sk", text: l.ko }) : null)));
+        if (fbs[i]) kids.push(aiBox(fbs[i], lang));
+        if (adlib[i]) kids.push(h("div", { class: "sl partner adlib" }, h("span", { class: "who", text: (n.partner || "상대") + " · 즉흥" }), h("div", {}, h("div", { class: "st", text: adlib[i] }))));
+      });
+      rc(lines, ...kids);
+      const c = lines.querySelector(".cur"); if (c) c.scrollIntoView({ block: "center", behavior: "smooth" });
     }
     async function run() {
       const myRun = ++stopFlag; let passed = 0, mine = 0;
-      for (const k of Object.keys(marks)) delete marks[k];
-      rc(ctrl, h("button", { class: "ghost", text: "그만하기", onclick: () => { stopAll(); finish(true); } }));
+      for (const o of [marks, fbs, adlib, saidMap]) for (const k of Object.keys(o)) delete o[k];
+      rc(ctrl, h("button", { class: "ghost", text: "그만하기", onclick: () => { stopAll(); row.hidden = true; finish(true); } }));
+      const alive = () => myRun === stopFlag;
       for (let i = 0; i < n.script.length; i++) {
-        if (myRun !== stopFlag) return;
+        if (!alive()) return;
         const l = n.script[i]; draw(i);
         if (l.who === "partner") { status.textContent = `${n.partner || "상대"}가 말하는 중…`; await say(l.t, lang, { female }); await new Promise(r => setTimeout(r, 250)); continue; }
         mine++;
         let ok = false;
         for (let attempt = 0; attempt < 2 && !ok; attempt++) {
-          if (myRun !== stopFlag) return;
-          status.textContent = attempt ? "한 번 더 말해 보세요 (2/2)" : "내 차례 · 말해 보세요";
-          let said = "";
-          try { said = await TP.listenOnce({ lang, onInterim: (t) => { status.textContent = "듣는 중: " + t; } }); }
-          catch { status.textContent = "마이크를 쓸 수 없어요. 리허설은 음성 인식이 필요해요."; return; }
-          if (myRun !== stopFlag) return;
+          if (!alive()) return;
+          status.textContent = attempt ? "모범 문장을 들었으니 한 번 더 말해 보세요 (2/2)" : "내 차례 · 말해 보세요";
+          const said = await askLine(lang, status, row);
+          if (!alive()) return;
+          saidMap[i] = said;
           const r = check(l.t, said, lang);
-          ok = r.pass;
-          status.textContent = ok ? `좋아요! (${Math.round(r.score * 100)}%)` : `「${said || "…"}」 → 정답과 ${Math.round((r.score || 0) * 100)}% 일치`;
-          if (!ok && attempt === 0) await say(l.t, lang);
+          if (r.pass) { ok = true; delete fbs[i]; status.textContent = `좋아요! (${Math.round(r.score * 100)}%)`; break; }
+          status.textContent = "AI 코치가 확인하는 중…"; draw(i);
+          const j = await aiRehearse(n, i, said);
+          if (!alive()) return;
+          fbs[i] = j.error ? { error: j.error } : { ok: j.ok, feedback: j.feedback, better: j.better };
+          if (j.ok) { ok = true; status.textContent = "다르게 말했지만 자연스러워요 👍"; }
+          if (j.offScript && j.reply) adlib[i] = j.reply;
+          draw(i);
+          if (adlib[i]) { status.textContent = `${n.partner || "상대"}가 내 말에 맞춰 대답하는 중…`; await say(adlib[i], lang, { female }); break; }
+          if (!ok && attempt === 0) { status.textContent = "모범 문장을 들어 보세요"; await say(l.t, lang); }
         }
         marks[i] = ok ? "pass" : "fail"; if (ok) passed++;
         draw(i);
-        if (!ok) await say(l.t, lang);
-        await new Promise(r => setTimeout(r, 400));
+        await new Promise(r => setTimeout(r, 500));
       }
       finish(false, passed, mine);
     }
     function finish(stopped, passed = 0, mine = 0) {
       const pct = mine ? Math.round(100 * passed / mine) : 0;
       if (!stopped) {
-        n.rehearsal = n.rehearsal || {};
         n.rehearsal.best = Math.max(n.rehearsal.best || 0, pct);
+        n.rehearsal.last = { date: Date.now(), pct, lvl };
         if (pct >= 80) n.rehearsal.next = lvl === "see" ? "first" : "blind";
         persist();
       }
-      status.textContent = stopped ? "멈췄어요." : `내 대사 ${passed}/${mine} 통과 (${pct}%)` + (pct >= 80 ? (lvl === "blind" ? " · 다 외웠어요! 실전 대화로 가 보세요." : " · 다음엔 한 단계 어렵게 해 보세요.") : " · 틀린 줄을 한 번 더 들어 보세요.");
-      rc(ctrl, 
+      status.textContent = stopped ? "멈췄어요." : `내 대사 ${passed}/${mine} 통과 (${pct}%)` + (pct >= 80 ? (lvl === "blind" ? " · 다 외웠어요! 실전 대화로 가 보세요." : " · 다음엔 한 단계 어렵게 해 보세요.") : " · AI 피드백을 보고 한 번 더 해 봐요.");
+      rc(ctrl,
         h("button", { class: "primary", text: "다시 리허설", onclick: run }),
         pct >= 80 && lvl !== "blind" ? h("button", { class: "ghost", text: "한 단계 어렵게", onclick: () => { lvl = lvl === "see" ? "first" : "blind"; drawSeg(); draw(-1); run(); } }) : null,
-        h("button", { class: "ghost", text: "같은 상황 실전 대화", onclick: () => TP.startScene(n.sceneId) }),
+        h("button", { class: "ghost", text: "실전 대화로", onclick: () => TP.startScene(n.sceneId, n.lessonId ? { lessonId: n.lessonId } : null) }),
         h("button", { class: "ghost", text: "처음으로", onclick: backHome }));
     }
     drawSeg(); draw(-1);
     rc(ctrl, h("button", { class: "primary", text: "리허설 시작", onclick: run }), h("button", { class: "ghost", text: "처음으로", onclick: backHome }));
     return sv;
+  };
+
+  // ---------- English course ----------
+  function lessonNote(L) {
+    S.en.reh[L.id] = S.en.reh[L.id] || {};
+    return { id: L.id, lessonId: L.id, lang: "en", sceneId: L.scene, sceneTitle: L.title, partner: (TP.LOOK[L.scene] || {}).name || "",
+      script: L.dialogue.map(d => ({ who: d.who, t: d.t, ko: d.ko })), rehearsal: S.en.reh[L.id] };
+  }
+  function enCoursePanel() {
+    const tile = (L) => {
+      const done = S.en.done[L.id], reh = S.en.reh[L.id], talk = S.en.talk[L.id];
+      const look = TP.LOOK[L.scene] || {};
+      return h("button", { class: "en-lesson" + (done ? " done" : ""), onclick: () => openEnLesson(L) },
+        h("div", { class: "el-face", html: true }),
+        h("div", { class: "el-txt" },
+          h("small", { class: "el-tag", text: `${look.name || ""} · ${look.job || ""}` }),
+          h("b", { text: L.title }),
+          h("span", { class: "el-goal", text: L.goal }),
+          h("div", { class: "el-prog" },
+            h("span", { class: done ? "on" : "", text: done ? `학습 ✓ ${done.quiz || ""}` : "학습" }),
+            h("span", { class: reh && reh.best ? "on" : "", text: reh && reh.best ? `리허설 ${reh.best}%` : "리허설" }),
+            h("span", { class: talk ? "on" : "", text: talk ? `실전 ${talk.score}점` : "실전" }))));
+    };
+    const work = EN.filter(l => ["claim", "8d", "audit", "delay"].includes(l.scene)), life = EN.filter(l => !["claim", "8d", "audit", "delay"].includes(l.scene));
+    const wrap = h("div", { class: "course" },
+      h("div", { class: "group-label", text: `업무 상황 · ${work.filter(l => S.en.done[l.id]).length}/${work.length}` }), h("div", { class: "en-lessons" }, ...work.map(tile)),
+      h("div", { class: "group-label", text: `생활 · 사교 · ${life.filter(l => S.en.done[l.id]).length}/${life.length}` }), h("div", { class: "en-lessons" }, ...life.map(tile)));
+    wrap.querySelectorAll(".el-face").forEach((el, i) => { el.innerHTML = TP.avatar([...work, ...life][i].scene); });
+    return wrap;
+  }
+  const EN_STEPS = [["1", "문법"], ["2", "대화 듣기"], ["3", "따라 말하기"], ["4", "퀴즈"], ["5", "리허설"], ["6", "실전 대화"]];
+  function openEnLesson(L, startStep = 0) {
+    const look = TP.LOOK[L.scene] || {}, female = !!look.female;
+    const meVoice = { female: !female };
+    const body = h("div", { class: "lesson-body" });
+    const stepNav = h("div", { class: "steps big" });
+    openStudy(L.title,
+      h("div", { class: "lesson-top" }, h("div", { class: "lt-face" }), h("div", {}, h("div", { class: "note", text: `상대: ${look.name || ""} · ${look.job || ""}` }), h("div", { class: "lt-goal", text: "목표 · " + L.goal })),
+        h("button", { class: "ghost sm", text: "PDF 학습지", onclick: () => TP.exportEnLessonPDF(L) })),
+      stepNav, body);
+    document.querySelector(".lt-face").innerHTML = TP.avatar(L.scene);
+    let step = startStep, tok = 0;
+    const go = (k) => { TP.cancelSpeech(); try { TP.listenOnce.stop && TP.listenOnce.stop(); } catch {} step = k; tok++; draw(); document.getElementById("main").scrollTop = 0; };
+    const nextBtn = (label) => h("button", { class: "primary", text: label || `다음: ${EN_STEPS[step + 1][1]}`, onclick: () => go(step + 1) });
+    const gBadge = (g) => g == null ? null : h("span", { class: "g-badge", text: "문법 " + (g + 1) + " · " + L.grammar[g].title });
+    function draw() {
+      rc(stepNav, ...EN_STEPS.map(([ic, t], i) => h("button", { class: (i === step ? "on" : "") + (i < step ? " past" : ""), onclick: () => go(i) }, h("span", { class: "sn", text: ic }), t)));
+      rc(body, [grammarStep, listenStep, shadowStep, quizStep, rehearseStep, talkStep][step]());
+    }
+    function grammarStep() {
+      return h("div", { class: "stack" },
+        ...L.grammar.map((g, i) => h("div", { class: "g-card" },
+          h("div", { class: "g-head" }, h("span", { class: "g-num", text: String(i + 1) }), h("b", { text: g.title })),
+          h("div", { class: "g-form", text: g.form }),
+          h("div", { class: "g-ko", text: g.ko }),
+          ...g.ex.map(e => h("button", { class: "g-ex", onclick: () => say(e.t, "en", meVoice) }, h("span", { class: "g-play", text: "▶" }), h("div", {}, h("div", { class: "g-t", text: e.t }), h("div", { class: "g-k", text: e.ko })))))),
+        h("div", { class: "fb-actions" }, nextBtn()));
+    }
+    function listenStep() {
+      let showKo = true, myTok = tok;
+      const list = h("div", { class: "script" });
+      const drawLines = (cur) => rc(list, ...L.dialogue.map((d, i) => h("button", { class: "sl " + d.who + (i === cur ? " cur" : ""), onclick: () => say(d.t, "en", d.who === "me" ? meVoice : { female }) },
+        h("span", { class: "who", text: d.who === "me" ? "나" : look.name }),
+        h("div", {}, h("div", { class: "st", text: d.t }), showKo ? h("div", { class: "sk", text: d.ko }) : null, gBadge(d.g)))));
+      const playBtn = h("button", { class: "primary sm", text: "▶ 전체 듣기" });
+      playBtn.onclick = async () => {
+        const mine = ++tok; myTok = mine; playBtn.disabled = true;
+        for (let i = 0; i < L.dialogue.length; i++) {
+          if (mine !== tok) break;
+          drawLines(i); const c = list.querySelector(".cur"); if (c) c.scrollIntoView({ block: "center", behavior: "smooth" });
+          await say(L.dialogue[i].t, "en", L.dialogue[i].who === "me" ? meVoice : { female });
+          await new Promise(r => setTimeout(r, 350));
+        }
+        if (mine === tok) drawLines(-1);
+        playBtn.disabled = false;
+      };
+      const koBtn = h("button", { class: "ghost sm", text: "한국어 뜻 숨기기" });
+      koBtn.onclick = () => { showKo = !showKo; koBtn.textContent = showKo ? "한국어 뜻 숨기기" : "한국어 뜻 보기"; drawLines(-1); };
+      drawLines(-1);
+      return h("div", { class: "stack" }, h("p", { class: "note", text: "줄을 누르면 그 줄만 들려요. 📐 표시는 오늘 배운 문법이 쓰인 줄이에요." }),
+        h("div", { class: "fb-actions" }, playBtn, h("button", { class: "ghost sm", text: "■ 멈춤", onclick: () => { tok++; TP.cancelSpeech(); playBtn.disabled = false; drawLines(-1); } }), koBtn), list,
+        h("div", { class: "fb-actions" }, nextBtn()));
+    }
+    function shadowStep() {
+      const mine = L.dialogue.map((d, i) => ({ ...d, i })).filter(d => d.who === "me");
+      let k = 0;
+      const box = h("div", { class: "stack" });
+      const render = () => {
+        const d = mine[k], myTok = tok;
+        const prevLine = L.dialogue[d.i - 1];
+        const res = h("div", { class: "q-res" });
+        rc(box,
+          h("div", { class: "progress" }, h("i", { style: `width:${Math.round(100 * k / mine.length)}%` })),
+          h("div", { class: "note", text: `내 대사 ${k + 1} / ${mine.length}` }),
+          prevLine && prevLine.who === "partner" ? h("div", { class: "sl partner" }, h("span", { class: "who", text: look.name }), h("div", {}, h("div", { class: "st", text: prevLine.t }), h("div", { class: "sk", text: prevLine.ko }))) : null,
+          h("div", { class: "qcard" },
+            h("div", { class: "q-target big", text: d.t }), h("div", { class: "q-ko", text: d.ko }), gBadge(d.g),
+            h("div", { class: "fb-actions" }, h("button", { class: "ghost sm", text: "▶ 듣기", onclick: () => say(d.t, "en", meVoice) }), h("button", { class: "ghost sm", text: "🐢 천천히", onclick: () => say(d.t, "en", { ...meVoice, rate: 0.7 }) })),
+            micAnswer({ lang: "en", label: "🎤 따라 말하기", onResult: async (said) => {
+              const r = check(d.t, said, "en");
+              rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "좋아요! 👍" : "조금 달라요" }), h("div", { class: "note", text: "내가 한 말: " + said }), diffView(r));
+              if (r.pass) return;
+              const slot = thinking(); res.append(slot);
+              const j = await aiJudge({ lang: "en", target: d.t, said, ko: d.ko, grammar: d.g != null ? L.grammar[d.g].form : "", context: "repeating a line of the model dialogue: " + L.title });
+              if (myTok !== tok) return;
+              slot.replaceWith(aiBox(j, "en"));
+              if (j.ok) { const v = res.querySelector(".verdict"); v.textContent = "그대로는 아니지만 자연스러워요 👍"; v.className = "verdict ok"; }
+            } }), res),
+          h("div", { class: "fb-actions" },
+            k > 0 ? h("button", { class: "ghost", text: "이전", onclick: () => { k--; tok++; render(); } }) : null,
+            k < mine.length - 1 ? h("button", { class: "primary", text: "다음 줄", onclick: () => { k++; tok++; render(); } }) : nextBtn()));
+        setTimeout(() => { if (myTok === tok) say(d.t, "en", meVoice); }, 300);
+      };
+      render();
+      return box;
+    }
+    function quizStep() {
+      const mineLines = L.dialogue.filter(d => d.who === "me");
+      const orderable = shuffle(mineLines.filter(d => { const n = d.t.split(/\s+/).length; return n >= 5 && n <= 12; })).slice(0, 2);
+      const sayable = shuffle(mineLines).slice(0, 3);
+      const items = [...L.blanks.map(b => ({ type: "blank", b })), ...orderable.map(d => ({ type: "order", d })), ...sayable.map(d => ({ type: "say", d }))];
+      let k = 0, right = 0;
+      const box = h("div", { class: "stack" });
+      const advance = (ok) => { if (ok) right++; k++; tok++; render(); };
+      const render = () => {
+        if (k >= items.length) return finish();
+        const it = items[k], myTok = tok;
+        const head = [h("div", { class: "progress" }, h("i", { style: `width:${Math.round(100 * k / items.length)}%` })),
+          h("div", { class: "note", text: `${k + 1} / ${items.length} · ${it.type === "blank" ? "빈칸 채우기" : it.type === "order" ? "단어 순서 맞추기" : "한국어 보고 말하기"}` })];
+        if (it.type === "blank") {
+          const b = it.b, g = L.grammar[b.g];
+          const full = b.s.replace("___", b.a);
+          const res = h("div", { class: "q-res" });
+          const grid = h("div", { class: "choices" });
+          let answered = false;
+          for (const o of shuffle([b.a, ...b.o])) grid.append(h("button", { class: "choice", text: o, onclick: (ev) => {
+            if (answered) return; answered = true;
+            const ok = o === b.a;
+            ev.currentTarget.classList.add(ok ? "ok" : "bad");
+            [...grid.children].forEach(x => { if (x.textContent === b.a) x.classList.add("ok"); });
+            rc(res, h("div", { class: ok ? "verdict ok" : "verdict bad", text: ok ? "정답!" : "아쉬워요" }),
+              h("div", { class: "q-target", text: full }), h("div", { class: "g-mini" }, h("b", { text: g.title }), " ", h("span", { class: "hl", text: g.form })), h("div", { class: "note", text: g.ko }),
+              h("button", { class: "primary sm", text: "다음", onclick: () => advance(ok) }));
+            say(full, "en", meVoice);
+          } }));
+          rc(box, ...head, h("div", { class: "qcard" },
+            h("div", { class: "q-blank" }, ...b.s.split("___").flatMap((part, i) => i ? [h("span", { class: "blank", text: "  ?  " }), part] : [part])),
+            h("div", { class: "q-ko", text: b.ko }), grid, res));
+        } else if (it.type === "order") {
+          const words = it.d.t.split(/\s+/);
+          let picked = [];
+          const pool = shuffle(words.map((w, i) => ({ w, i })));
+          const ans = h("div", { class: "order-ans" }), bank = h("div", { class: "order-bank" }), res = h("div", { class: "q-res" });
+          const paint = () => {
+            rc(ans, ...(picked.length ? picked.map((p, j) => h("button", { class: "chip on", text: p.w, onclick: () => { picked.splice(j, 1); paint(); } })) : [h("span", { class: "note", text: "아래 단어를 순서대로 누르세요" })]));
+            rc(bank, ...pool.filter(p => !picked.includes(p)).map(p => h("button", { class: "chip", text: p.w, onclick: () => { picked.push(p); paint(); if (picked.length === words.length) checkIt(); } })));
+          };
+          const checkIt = () => {
+            const ok = picked.map(p => p.w).join(" ") === it.d.t;
+            rc(res, h("div", { class: ok ? "verdict ok" : "verdict bad", text: ok ? "완벽해요!" : "순서가 조금 달라요" }), h("div", { class: "q-target", text: it.d.t }), gBadge(it.d.g),
+              h("div", { class: "fb-actions" }, ok ? null : h("button", { class: "ghost sm", text: "다시 해보기", onclick: () => { picked = []; rc(res); paint(); } }), h("button", { class: "primary sm", text: "다음", onclick: () => advance(ok) })));
+            say(it.d.t, "en", meVoice);
+          };
+          paint();
+          rc(box, ...head, h("div", { class: "qcard" }, h("div", { class: "q-ko", text: it.d.ko }), ans, bank, res));
+        } else {
+          const d = it.d, res = h("div", { class: "q-res" });
+          const hint = h("div", { class: "q-hint", hidden: true, text: d.t.split(/\s+/).slice(0, 3).join(" ") + " …" });
+          let done = false;
+          rc(box, ...head, h("div", { class: "qcard" },
+            h("div", { class: "q-ko big", text: d.ko }), gBadge(d.g), h("div", { class: "note", text: "영어로 말해 보세요. 대화문과 똑같지 않아도 뜻이 통하고 자연스러우면 정답이에요." }),
+            h("div", { class: "fb-actions" }, h("button", { class: "mini", text: "💡 첫 단어 힌트", onclick: () => { hint.hidden = false; } })), hint,
+            micAnswer({ lang: "en", onResult: async (said) => {
+              if (done) return;
+              const r = check(d.t, said, "en");
+              rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "정답! 👍" : "모범 문장과 달라요" }), h("div", { class: "note", text: "내가 한 말: " + said }), h("div", { class: "note", text: "모범 문장:" }), diffView(r));
+              if (r.pass) { done = true; res.append(h("button", { class: "primary sm", text: "다음", onclick: () => advance(true) })); say(d.t, "en", meVoice); return; }
+              const slot = thinking(); res.append(slot);
+              const j = await aiJudge({ lang: "en", target: d.t, said, ko: d.ko, grammar: d.g != null ? L.grammar[d.g].form : "", context: "lesson: " + L.title });
+              if (myTok !== tok) return;
+              slot.replaceWith(aiBox(j, "en"));
+              if (j.ok) { const v = res.querySelector(".verdict"); v.textContent = "다르게 말했지만 정답이에요 👍"; v.className = "verdict ok"; }
+              else say(d.t, "en", meVoice);
+              done = true;
+              res.append(h("div", { class: "fb-actions" }, j.ok ? null : h("button", { class: "ghost sm", text: "다시 말하기", onclick: () => { done = false; rc(res); } }), h("button", { class: "primary sm", text: "다음", onclick: () => advance(!!j.ok) })));
+            } }), res));
+        }
+      };
+      const finish = () => {
+        let added = 0;
+        L.dialogue.forEach(d => { if (d.who === "me") added += addCard({ lang: "en", kind: "line", t: d.t, ko: d.ko, frame: d.g != null ? L.grammar[d.g].form : "", frameKo: d.g != null ? L.grammar[d.g].title : "", src: L.title, lesson: L.id, box: 1, due: Date.now() + DAY - 3600e3 }) ? 1 : 0; });
+        L.grammar.forEach(g => g.ex.forEach(e => { added += addCard({ lang: "en", kind: "pat", t: e.t, ko: e.ko, frame: g.form, frameKo: g.title, src: L.title, lesson: L.id, box: 1, due: Date.now() + DAY - 3600e3 }) ? 1 : 0; }));
+        S.en.done[L.id] = { date: Date.now(), quiz: `${right}/${items.length}` };
+        persist();
+        rc(box, h("div", { class: "panel-card" },
+          h("div", { class: "big-num" }, h("b", { text: `${right}/${items.length}` }), h("span", { text: " 퀴즈 정답" })),
+          h("div", { class: "note", text: added ? `복습 카드 ${added}개를 만들었어요. 내일부터 「복습」에 나와요.` : "복습 카드는 이미 만들어져 있어요." }),
+          h("div", { class: "fb-actions" }, h("button", { class: "primary", text: "다음: 대본 리허설", onclick: () => go(4) }), h("button", { class: "ghost", text: "퀴즈 다시", onclick: () => { k = 0; right = 0; tok++; render(); } }))));
+      };
+      render();
+      return box;
+    }
+    function rehearseStep() {
+      const reh = S.en.reh[L.id] || {};
+      return h("div", { class: "stack" }, h("div", { class: "panel-card" },
+        h("b", { text: "대본을 외워서 말해 보는 단계예요" }),
+        h("div", { class: "note", text: `${look.name}의 대사는 소리로 나오고, 내 차례에 외운 문장을 말해요. 보면서 → 첫 단어만 → 안 보고, 세 단계로 어렵게 할 수 있어요. 대본과 다르게 말해도 AI 코치가 판단해 주고, 뜻이 달라지면 ${look.name}가 내 말에 맞춰 받아줘요.` }),
+        reh.best ? h("div", { class: "note", text: `최고 기록 ${reh.best}% · 다음 단계: ${({ see: "보면서", first: "첫 단어만", blind: "안 보고" })[reh.next || "see"]}` }) : null,
+        h("div", { class: "fb-actions" }, h("button", { class: "primary", text: "🎭 리허설 시작", onclick: () => TP.openRehearsal(lessonNote(L)) }), nextBtn("다음: 실전 대화"))));
+    }
+    function talkStep() {
+      const talk = S.en.talk[L.id];
+      return h("div", { class: "stack" }, h("div", { class: "panel-card" },
+        h("b", { text: "이제 대본 없이 실전이에요" }),
+        h("div", { class: "note", text: `같은 상황이지만 ${look.name}가 숫자·날짜·질문을 조금씩 바꿔서 말해요. 오늘 배운 표현을 쓸 기회를 만들어 주고, 끝나면 교정 노트에서 배운 표현을 썼는지 체크해 드려요.` }),
+        h("div", { class: "g-list" }, ...L.grammar.map(g => h("div", { class: "g-mini" }, h("b", { text: g.title }), " ", h("span", { class: "hl", text: g.form })))),
+        talk ? h("div", { class: "note", text: `지난 실전: ${fmtDate(talk.date)} · ${talk.score}점` }) : null,
+        h("div", { class: "fb-actions" }, h("button", { class: "primary", text: "💬 실전 대화 시작", onclick: () => TP.startScene(L.scene, { lessonId: L.id }) }))));
+    }
+    draw();
+  }
+
+  TP.exportEnLessonPDF = (L) => {
+    const d = new Date(), ds = `${d.getFullYear()}.${d.getMonth() + 1}.${d.getDate()}`;
+    const look = TP.LOOK[L.scene] || {};
+    const mine = L.dialogue.filter(x => x.who === "me");
+    const el = sheet(`영어 · ${L.title}`, `${ds} · 코스 레슨 · 상대: ${look.name || ""}`,
+      h("div", { class: "p-summary", text: "목표 · " + L.goal }),
+      pblock("1. 오늘의 문법 · 표현", ...L.grammar.map((g, i) => h("div", { class: "p-row p-avoid" }, h("div", { class: "p-num", text: String(i + 1) }), h("div", {},
+        h("div", { class: "p-frame", text: `${g.title} — ${g.form}` }), h("div", { class: "p-why", text: g.ko }),
+        ...g.ex.map(e => h("div", { class: "p-ex", text: `• ${e.t}  —  ${e.ko}` })),
+        h("div", { class: "p-label", text: "이 틀로 내 문장 2개 만들기" }), lines(2))))),
+      pblock("2. 대화문 (소리 내어 3번 읽기 □ □ □)", ...L.dialogue.map(x => h("div", { class: "p-script " + x.who },
+        h("span", { class: "p-who", text: x.who === "me" ? "나" : (look.name || "상대") }), h("div", {}, h("div", { text: x.t }), h("div", { class: "p-why", text: x.ko + (x.g != null ? "  (문법 " + (x.g + 1) + ")" : "") }))))),
+      h("div", { class: "p-break" }),
+      pblock("3. 빈칸 채우기", ...L.blanks.map((b, i) => h("div", { class: "p-row p-avoid" }, h("div", { class: "p-num", text: String(i + 1) }), h("div", {},
+        h("div", { class: "p-q", text: b.s.replace("___", "________") }), h("div", { class: "p-why", text: `${b.ko}   (${shuffle([b.a, ...b.o]).join(" / ")})` }))))),
+      pblock("4. 한국어 보고 내 대사 써 보기", ...mine.map((x, i) => h("div", { class: "p-row p-avoid" }, h("div", { class: "p-num", text: String(i + 1) }), h("div", {}, h("div", { class: "p-q", text: x.ko }), lines(2))))),
+      pblock("정답", ...L.blanks.map((b, i) => h("div", { class: "p-ans", text: `빈칸 ${i + 1}. ${b.s.replace("___", b.a)}` })), ...mine.map((x, i) => h("div", { class: "p-ans", text: `대사 ${i + 1}. ${x.t}` }))));
+    makeAndShare(el, `TalkPartner_EN_${L.id}_${L.title.replace(/[^\p{L}\p{N}]+/gu, "_")}.pdf`);
   };
 
   // ---------- Vietnamese beginner course ----------
@@ -490,8 +842,8 @@
             if (!r.pass) play(0.6);
           } }), res),
         h("div", { class: "fb-actions" },
-          idx > 0 ? h("button", { class: "ghost", text: "← 이전", onclick: () => { idx--; learn(); } }) : null,
-          h("button", { class: "primary", text: idx < items.length - 1 ? "다음 →" : "퀴즈로 →", onclick: () => { if (idx < items.length - 1) { idx++; learn(); } else { phase = 1; startListen(); } } })));
+          idx > 0 ? h("button", { class: "ghost", text: "이전", onclick: () => { idx--; learn(); } }) : null,
+          h("button", { class: "primary", text: idx < items.length - 1 ? "다음" : "퀴즈로", onclick: () => { if (idx < items.length - 1) { idx++; learn(); } else { phase = 1; startListen(); } } })));
       const alive = () => run === stopFlag && tok === learnTok;
       (async () => { await new Promise(r => setTimeout(r, 250)); if (!alive()) return; await play(0.85); if (!alive()) return; await new Promise(r => setTimeout(r, 500)); if (alive()) await play(0.55); })();
     }
@@ -527,7 +879,7 @@
       const it = items[i];
       const res = h("div", { class: "q-res" });
       const hint = h("div", { class: "q-hint", hidden: true }, readBlock(it.v, it.r, true));
-      const nextBtn = h("button", { class: "primary", text: q.length ? "다음 →" : "끝내기", onclick: speakStep });
+      const nextBtn = h("button", { class: "primary", text: q.length ? "다음" : "끝내기", onclick: speakStep });
       rc(body, stepBar(), h("div", { class: "note", text: `남은 문제 ${q.length + 1}` }), frameBanner(),
         h("div", { class: "qcard center" }, h("div", { class: "q-ko big", text: it.k }), h("div", { class: "note", text: "베트남어로 말해 보세요. 생각이 안 나면 발음 보기를 누르세요." }),
           h("div", { class: "fb-actions center" }, h("button", { class: "mini", text: "💡 발음 보기", onclick: () => { hint.hidden = false; say(it.v, "vi", { rate: 0.6 }); } })), hint,
@@ -647,86 +999,149 @@
 
   // ---------- styles ----------
   const css = `
-  .hometabs { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .htab { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 11px 18px; font-weight: 600; font-size: 16px; display: inline-flex; gap: 8px; align-items: center; }
-  .htab[aria-selected="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
-  .htab .count { background: var(--bad); color: #fff; border-radius: 99px; font-size: 12.5px; padding: 1px 8px; font-family: var(--font-mono); }
-  .sync { margin-left: auto; font-size: 13px; color: var(--muted); }
+  .hometabs { display: flex; flex-wrap: wrap; gap: 4px 26px; align-items: flex-end; border-bottom: 1px solid var(--line); }
+  .htab { border: 0; background: none; padding: 10px 2px 12px; font-weight: 600; font-size: 17px; color: var(--muted); display: inline-flex; gap: 8px; align-items: center; border-bottom: 3px solid transparent; margin-bottom: -1px; border-radius: 0; }
+  .htab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--ink); }
+  .htab .count { background: var(--accent); color: #fff; border-radius: 99px; font-size: 12.5px; padding: 1px 8px; font-variant-numeric: tabular-nums; }
+  .sync { margin-left: auto; font-size: 13px; color: var(--muted); padding-bottom: 14px; }
   .sync.ok { color: var(--good); } .sync.warn { color: var(--signal); }
-  .homepanel { display: grid; gap: 16px; }
-  .panel-card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; display: grid; gap: 14px; justify-items: start; }
-  .big-num b { font-family: var(--font-display); font-size: 44px; line-height: 1; color: var(--accent); }
+  .homepanel { display: grid; gap: 18px; }
+  .hl { background: linear-gradient(transparent 52%, var(--hl-soft) 52%, var(--hl-soft) 92%, transparent 92%); padding: 0 2px; }
+  .panel-card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 24px; display: grid; gap: 14px; justify-items: start; box-shadow: var(--shadow); }
+  .big-num b { font-family: var(--font-display); font-weight: 700; font-size: 48px; line-height: 1; color: var(--ink); font-variant-numeric: tabular-nums; }
   .big-num span { font-size: 18px; color: var(--muted); }
-  .ghost.sm, .primary.sm { padding: 9px 14px; font-size: 14.5px; border-radius: 10px; }
-  a.ghost { text-decoration: none; color: var(--ink); display: inline-block; }
-  .study { padding-block: 22px 60px; display: grid; gap: 18px; }
-  .study-head h2 { font-family: var(--font-display); margin: 0; font-size: 26px; }
-  .progress { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; }
-  .progress i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
-  .qcard { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 22px; display: grid; gap: 14px; }
+  .ghost.sm, .primary.sm { padding: 9px 15px; font-size: 15px; border-radius: 12px; }
+  .primary.sm { box-shadow: none; }
+  a.ghost { text-decoration: none; display: inline-block; }
+  .study { padding-block: 22px 70px; display: grid; gap: 18px; }
+  .study-head h2 { font-family: var(--font-display); font-weight: 700; margin: 0; font-size: 30px; letter-spacing: -0.01em; }
+  .stack { display: grid; gap: 16px; }
+  .progress { height: 5px; background: var(--line); border-radius: 99px; overflow: hidden; }
+  .progress i { display: block; height: 100%; background: var(--ink); transition: width .3s; }
+  .qcard { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 26px 24px; display: grid; gap: 14px; box-shadow: var(--shadow); }
   .qcard.center, .center { justify-items: center; text-align: center; justify-content: center; }
-  .q-ko { font-size: 22px; font-weight: 600; }
-  .q-ko.big { font-size: 28px; }
-  .q-target { font-size: 20px; font-weight: 600; }
-  .q-hint { background: var(--accent-soft); border-radius: 12px; padding: 12px 14px; display: grid; gap: 6px; }
-  .frame { background: var(--signal-soft); color: var(--ink); border-radius: 12px; padding: 10px 14px; font-size: 15.5px; }
-  .frame b { color: var(--signal); font-size: 17px; }
+  .q-ko { font-size: 21px; font-weight: 600; text-wrap: balance; }
+  .q-ko.big { font-size: 27px; }
+  .q-target { font-family: var(--font-serif); font-size: 21px; font-weight: 600; line-height: 1.45; }
+  .q-target.big { font-size: 26px; text-wrap: balance; }
+  .q-hint { background: var(--bg); border: 1px dashed var(--line-strong); border-radius: 14px; padding: 12px 14px; display: grid; gap: 6px; font-family: var(--font-serif); }
+  .frame { background: var(--surface); border-left: 4px solid var(--hl); border-radius: 6px; padding: 10px 14px; font-size: 15.5px; }
+  .frame b { font-family: var(--font-serif); font-size: 18px; background: linear-gradient(transparent 55%, var(--hl-soft) 55%); }
   .verdict { font-weight: 700; font-size: 18px; } .verdict.ok { color: var(--good); } .verdict.bad { color: var(--bad); }
-  .diff { font-size: 19px; line-height: 1.6; } .diff .ok { color: var(--good); } .diff .miss { color: var(--bad); text-decoration: underline wavy; text-underline-offset: 4px; }
+  .diff { font-family: var(--font-serif); font-size: 20px; line-height: 1.6; } .diff .ok { color: var(--good); } .diff .miss { color: var(--bad); text-decoration: underline wavy; text-underline-offset: 4px; }
   .mic-area { display: grid; gap: 8px; justify-items: center; width: 100%; }
-  .mic-row { display: flex; gap: 10px; align-items: center; }
-  .mic-btn { background: var(--accent); color: #fff; border: 0; border-radius: 99px; padding: 15px 28px; font-weight: 700; font-size: 17px; }
-  .mic-btn.on { background: var(--good); }
-  .live { min-height: 1.4em; color: var(--muted); font-size: 16px; }
-  .typed { display: flex; gap: 8px; width: 100%; max-width: 520px; }
-  .typed input { flex: 1; min-width: 0; font: inherit; font-size: 17px; padding: 11px 13px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
-  .play-big { width: 96px; height: 96px; border-radius: 50%; border: 0; background: var(--accent-soft); font-size: 40px; }
+  .mic-row { display: flex; gap: 12px; align-items: center; }
+  .mic-btn { background: var(--ink); color: var(--bg); border: 0; border-radius: 99px; padding: 16px 30px; font-weight: 700; font-size: 17px; }
+  .mic-btn.on { background: var(--good); color: #fff; }
+  @media (prefers-reduced-motion: no-preference) { .mic-btn.on, .mic-mini.on { animation: pulse 1.3s ease-in-out infinite; } }
+  .live { min-height: 1.4em; color: var(--muted); font-size: 16px; font-family: var(--font-serif); }
+  .typed { display: flex; gap: 8px; width: 100%; max-width: 560px; align-items: center; }
+  .typed input { flex: 1; min-width: 0; font: inherit; font-size: 17px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); }
+  .play-big { width: 96px; height: 96px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); font-size: 38px; box-shadow: var(--shadow); }
   .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 10px; width: 100%; }
-  .choice { border: 1.5px solid var(--line); background: var(--surface); border-radius: 14px; padding: 16px; font-size: 18px; font-weight: 600; }
+  .choice { border: 1.5px solid var(--line-strong); background: var(--surface); border-radius: 16px; padding: 16px; font-size: 18px; font-weight: 600; }
   .choice.ok { border-color: var(--good); background: var(--good-soft); color: var(--good); }
   .choice.bad { border-color: var(--bad); background: var(--bad-soft); color: var(--bad); }
-  .syl-row { display: flex; flex-wrap: wrap; gap: 6px 14px; justify-content: center; }
+  .syl-row { display: flex; flex-wrap: wrap; gap: 6px 16px; justify-content: center; }
   .syl { display: grid; justify-items: center; gap: 0; }
-  .syl b { font-size: 22px; } .syl i { font-style: normal; color: var(--signal); font-size: 16px; font-weight: 700; } .syl small { color: var(--muted); font-size: 13px; }
-  .syl-row.big .syl b { font-size: 40px; line-height: 1.15; } .syl-row.big .syl i { font-size: 22px; } .syl-row.big .syl small { font-size: 16px; }
+  .syl b { font-size: 22px; } .syl i { font-style: normal; color: var(--signal); font-size: 16px; font-weight: 700; } .syl small { color: var(--muted); font-size: 13px; font-family: var(--font-serif); }
+  .syl-row.big .syl b { font-size: 42px; line-height: 1.15; } .syl-row.big .syl i { font-size: 22px; } .syl-row.big .syl small { font-size: 17px; }
   .steps { display: flex; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
   .steps span { padding: 4px 10px; border-radius: 99px; background: var(--line); color: var(--muted); }
-  .steps .on { background: var(--accent); color: #fff; } .steps .done { background: var(--good-soft); color: var(--good); }
-  .course { display: grid; gap: 14px; }
+  .steps .on { background: var(--ink); color: var(--bg); } .steps .done { background: var(--good-soft); color: var(--good); }
+  .steps.big { gap: 6px; overflow-x: auto; padding-bottom: 2px; flex-wrap: nowrap; }
+  .steps.big button { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 8px 14px 8px 8px; font-size: 15px; font-weight: 600; color: var(--muted); display: inline-flex; gap: 8px; align-items: center; }
+  .steps.big .sn { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; background: var(--bg); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .steps.big button.past { color: var(--ink); } .steps.big button.past .sn { background: var(--good-soft); color: var(--good); }
+  .steps.big button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); } .steps.big button.on .sn { background: var(--hl); color: #1B2340; }
+  .course { display: grid; gap: 16px; }
   .lessons { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px; }
-  .lesson { border: 1px solid var(--line); background: var(--surface); border-radius: 16px; padding: 16px; text-align: left; display: grid; gap: 4px; }
+  .lesson { border: 1px solid var(--line); background: var(--surface); border-radius: 18px; padding: 16px; text-align: left; display: grid; gap: 4px; box-shadow: var(--shadow); }
   .lesson .li { font-size: 28px; } .lesson b { font-size: 17px; } .lesson small { color: var(--muted); font-size: 13.5px; }
-  .lesson.done { border-color: var(--good); background: var(--good-soft); }
+  .lesson.done { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); }
+  .en-lessons { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap: 14px; }
+  .en-lesson { border: 1px solid var(--line); background: var(--surface); border-radius: 22px; padding: 16px 18px; text-align: left; display: grid; grid-template-columns: 76px 1fr; gap: 16px; align-items: start; box-shadow: var(--shadow); }
+  .el-face { width: 76px; height: 76px; border-radius: 50%; overflow: hidden; }
+  .el-txt { display: grid; gap: 4px; min-width: 0; }
+  .el-tag { color: var(--muted); font-size: 13px; }
+  .el-txt b { font-family: var(--font-display); font-size: 20px; font-weight: 700; line-height: 1.25; }
+  .el-goal { font-size: 14px; color: var(--muted); line-height: 1.45; }
+  .el-prog { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; }
+  .el-prog span { font-size: 12px; color: var(--muted); padding-top: 6px; border-top: 4px solid var(--line); }
+  .el-prog span.on { color: var(--ink); border-top-color: var(--good); font-weight: 600; }
+  .lesson-top { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  .lesson-top > div:nth-child(2) { flex: 1; min-width: 200px; }
+  .lt-face { width: 64px; height: 64px; border-radius: 50%; overflow: hidden; flex: none; }
+  .lt-goal { font-size: 16px; font-weight: 500; }
+  .g-card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 22px 22px 14px; display: grid; gap: 10px; box-shadow: var(--shadow); }
+  .g-head { display: flex; gap: 10px; align-items: center; }
+  .g-num { width: 28px; height: 28px; border-radius: 50%; background: var(--ink); color: var(--bg); display: grid; place-items: center; font-size: 14px; font-weight: 700; }
+  .g-head b { font-size: 19px; }
+  .g-form { font-family: var(--font-serif); font-size: 23px; font-weight: 600; justify-self: start; background: linear-gradient(transparent 50%, var(--hl-soft) 50%, var(--hl-soft) 92%, transparent 92%); padding: 0 4px; }
+  .g-ko { color: var(--muted); font-size: 15.5px; max-width: 62ch; }
+  .g-ex { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: start; text-align: left; border: 0; border-top: 1px solid var(--line); background: none; padding: 12px 0 8px; border-radius: 0; }
+  .g-play { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-size: 12px; }
+  .g-t { font-family: var(--font-serif); font-size: 19px; } .g-k { font-size: 14px; color: var(--muted); }
+  .g-badge { justify-self: start; display: inline-block; font-size: 12.5px; font-weight: 600; color: var(--ink); background: var(--hl-soft); border-radius: 6px; padding: 2px 8px; margin-top: 4px; }
+  .g-mini { font-size: 15px; } .g-mini .hl { font-family: var(--font-serif); font-size: 17px; }
+  .g-list { display: grid; gap: 6px; }
+  .q-blank { font-family: var(--font-serif); font-size: 26px; line-height: 1.5; text-wrap: balance; }
+  .q-blank .blank { display: inline-block; min-width: 3.4em; border-bottom: 3px solid var(--ink); color: transparent; margin: 0 4px; background: var(--hl-soft); border-radius: 4px 4px 0 0; }
+  .order-ans { min-height: 58px; border: 1.5px dashed var(--line-strong); border-radius: 16px; padding: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .order-bank { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 12px; padding: 9px 14px; font-family: var(--font-serif); font-size: 18px; }
+  .chip.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .ai-box { border-radius: 16px; padding: 14px 16px; background: var(--accent-soft); display: grid; gap: 6px; text-align: left; font-size: 15.5px; }
+  .ai-box.ok { background: var(--good-soft); } .ai-box.warn { background: var(--signal-soft); }
+  .ai-box.wait { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+  .ai-tag { font-size: 13px; font-weight: 700; color: var(--accent); } .ai-box.ok .ai-tag { color: var(--good); }
+  .ai-better { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-family: var(--font-serif); font-size: 18px; font-weight: 600; }
+  .dots { width: 18px; height: 18px; border-radius: 50%; border: 2.5px solid var(--line-strong); border-top-color: var(--accent); }
+  @media (prefers-reduced-motion: no-preference) { .dots { animation: spin .8s linear infinite; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
   .note-list { display: grid; gap: 12px; }
-  .note-item { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 6px; }
+  .note-item { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px; display: grid; gap: 6px; box-shadow: var(--shadow); }
   .ni-top { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .ni-top b { font-size: 17px; }
   .mini.left { text-align: left; }
   .script { display: grid; gap: 8px; }
-  .sl { display: grid; grid-template-columns: 64px 1fr; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
-  .sl.me { background: var(--accent-soft); }
-  .sl .who { font-size: 12.5px; font-weight: 700; color: var(--muted); padding-top: 3px; }
-  .sl .st { font-size: 17px; } .sl .sk { font-size: 14px; color: var(--muted); }
-  .sl.cur { outline: 2.5px solid var(--accent); } .sl.pass { border-color: var(--good); } .sl.pass .who { color: var(--good); } .sl.fail { border-color: var(--bad); } .sl.fail .who { color: var(--bad); }
-  .pdf-modal { position: fixed; inset: 0; z-index: 60; background: rgba(10,14,20,.45); display: grid; place-items: center; padding: 20px; }
-  .pm-card { background: var(--surface); color: var(--ink); border-radius: 18px; padding: 22px; max-width: 440px; width: 100%; display: grid; gap: 12px; }
+  .sl { display: grid; grid-template-columns: 70px 1fr; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); text-align: left; width: 100%; }
+  .sl.me { background: var(--accent-soft); border-color: transparent; }
+  .sl .who { font-size: 13px; font-weight: 700; color: var(--muted); padding-top: 4px; }
+  .sl .st { font-family: var(--font-serif); font-size: 18.5px; line-height: 1.45; } .sl .sk { font-size: 14px; color: var(--muted); margin-top: 2px; }
+  .sl .said { font-size: 14px; color: var(--signal); margin-top: 2px; }
+  .sl.cur { box-shadow: inset 0 0 0 2px var(--ink); }
+  .sl.cur .st { display: inline; background: linear-gradient(transparent 55%, var(--hl-soft) 55%, var(--hl-soft) 94%, transparent 94%); -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .sl.cur .st + * { margin-top: 4px; }
+  .sl.pass { border-color: var(--good); } .sl.pass .who { color: var(--good); } .sl.fail { border-color: var(--bad); } .sl.fail .who { color: var(--bad); }
+  .sl.adlib { border-style: dashed; background: var(--bg); }
+  .rh-dock { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0 calc(8px + env(safe-area-inset-bottom, 0px)); display: grid; gap: 8px; border-top: 1px solid var(--line); }
+  .rh-status { font-size: 16px; font-weight: 600; min-height: 1.4em; }
+  .mic-mini { flex: none; width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--ink); color: var(--bg); font-size: 18px; }
+  .mic-mini.on { background: var(--good); color: #fff; }
+  .corr-item.target.used { border-color: color-mix(in srgb, var(--good) 45%, var(--line)); } .corr-item.target.used .new { color: var(--good); }
+  .corr-item.target.missed .new { color: var(--muted); }
+  .pdf-modal { position: fixed; inset: 0; z-index: 60; background: rgba(14, 19, 34, .45); display: grid; place-items: center; padding: 20px; }
+  .pm-card { background: var(--surface); color: var(--ink); border-radius: 22px; padding: 24px; max-width: 440px; width: 100%; display: grid; gap: 12px; box-shadow: var(--shadow); }
   .pdf-host { position: fixed; left: -12000px; top: 0; }
-  .pdf-sheet { width: 720px; background: #fff; color: #17202e; font-family: "IBM Plex Sans KR", "Apple SD Gothic Neo", sans-serif; font-size: 13.5px; line-height: 1.55; padding: 4px 6px; }
-  .pdf-sheet h1 { font-size: 24px; margin: 2px 0 2px; } .pdf-sheet h2 { font-size: 16px; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #1e56c8; color: #1e56c8; }
-  .p-brand { font-size: 11px; letter-spacing: .1em; color: #c7781a; font-weight: 700; text-transform: uppercase; } .p-sub { color: #5b6676; font-size: 12.5px; }
-  .p-summary { background: #f3f5f8; border-radius: 8px; padding: 8px 12px; margin-top: 10px; }
-  .p-row { display: grid; grid-template-columns: 26px 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px dashed #dce2ea; page-break-inside: avoid; }
+  .pdf-sheet { width: 720px; background: #fff; color: #1b2340; font-family: "IBM Plex Sans KR", "Apple SD Gothic Neo", sans-serif; font-size: 13.5px; line-height: 1.55; padding: 4px 6px; }
+  .pdf-sheet h1 { font-family: "Hahmlet", Georgia, serif; font-size: 26px; margin: 2px 0 2px; } .pdf-sheet h2 { font-size: 16px; margin: 20px 0 8px; padding-bottom: 5px; border-bottom: 2px solid #1b2340; color: #1b2340; }
+  .p-brand { font-size: 11.5px; color: #8a6d00; font-weight: 700; } .p-sub { color: #5e6680; font-size: 12.5px; }
+  .p-summary { background: #f6f7fa; border-radius: 8px; padding: 8px 12px; margin-top: 10px; }
+  .p-row { display: grid; grid-template-columns: 26px 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px dashed #e2e5ee; page-break-inside: avoid; }
   .p-row > div:only-child { grid-column: 1 / -1; }
-  .p-num { font-weight: 700; color: #1e56c8; }
-  .p-old { color: #5b6676; text-decoration: line-through; } .p-new { font-weight: 600; font-size: 15px; } .p-why { color: #5b6676; font-size: 12.5px; }
-  .p-read { color: #c7781a; font-size: 12.5px; } .p-frame { font-weight: 600; font-size: 15.5px; color: #c7781a; } .p-ex { padding-left: 6px; }
+  .p-num { font-weight: 700; color: #2f4bd8; }
+  .p-old { color: #5e6680; text-decoration: line-through; } .p-new { font-family: "Hahmlet", Georgia, serif; font-weight: 600; font-size: 15.5px; } .p-why { color: #5e6680; font-size: 12.5px; }
+  .p-read { color: #b26a12; font-size: 12.5px; } .p-frame { font-weight: 600; font-size: 15.5px; color: #1b2340; background: linear-gradient(transparent 55%, #fff1a8 55%); justify-self: start; } .p-ex { padding-left: 6px; font-family: "Hahmlet", Georgia, serif; }
   .p-label { font-size: 11.5px; color: #8a94a3; margin-top: 4px; } .p-q { font-weight: 600; }
-  .p-lines { display: grid; gap: 0; } .p-line { height: 26px; border-bottom: 1px solid #c9d1dc; }
-  .p-script { display: grid; grid-template-columns: 54px 1fr; gap: 8px; padding: 5px 0; page-break-inside: avoid; } .p-script.me { color: #1e56c8; }
-  .p-who { font-size: 11.5px; font-weight: 700; color: #8a94a3; padding-top: 2px; }
+  .p-lines { display: grid; gap: 0; } .p-line { height: 27px; border-bottom: 1px solid #cbd1df; }
+  .p-script { display: grid; grid-template-columns: 54px 1fr; gap: 8px; padding: 5px 0; page-break-inside: avoid; font-family: "Hahmlet", Georgia, serif; } .p-script.me { color: #2f4bd8; }
+  .p-script .p-why { font-family: "IBM Plex Sans KR", sans-serif; }
+  .p-who { font-size: 11.5px; font-weight: 700; color: #8a94a3; padding-top: 2px; font-family: "IBM Plex Sans KR", sans-serif; }
   .p-break { page-break-before: always; height: 0; }
   .p-ans { font-size: 12.5px; padding: 2px 0; }
-  .p-table { width: 100%; border-collapse: collapse; } .p-table th, .p-table td { border: 1px solid #c9d1dc; padding: 6px 7px; text-align: left; vertical-align: middle; }
-  .p-table th { background: #eef2f8; font-size: 12px; } .p-vi { font-weight: 700; } .p-write { width: 28%; height: 34px; }
+  .p-table { width: 100%; border-collapse: collapse; } .p-table th, .p-table td { border: 1px solid #cbd1df; padding: 6px 7px; text-align: left; vertical-align: middle; }
+  .p-table th { background: #f0f2f7; font-size: 12px; } .p-vi { font-weight: 700; } .p-write { width: 28%; height: 34px; }
   `;
   document.head.append(h("style", { text: css }));
 

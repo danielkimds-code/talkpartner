@@ -7,23 +7,28 @@
 <title>TalkPartner</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Sans+KR:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hahmlet:wght@500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
 <style>
-/* Layout: one-screen iPad app. Landscape = character stage on the left, conversation on the right; portrait = compact stage on top. Big mic control pinned at the bottom. */
+/* Study notebook: cool paper, fountain-pen ink, one highlighter. Landscape = character on the left, work on the right. */
 :root {
-  --bg: #F3F5F8; --surface: #FFFFFF; --ink: #17202E; --muted: #5B6676; --line: #DCE2EA;
-  --accent: #1E56C8; --accent-soft: #E3EBFA; --me: #1E56C8; --me-ink: #FFFFFF;
-  --signal: #C7781A; --signal-soft: #FBEFDD; --good: #23855A; --good-soft: #E1F2E9; --bad: #B83A3A; --bad-soft: #F8E1E1;
-  --font-display: "Bricolage Grotesque", "IBM Plex Sans KR", -apple-system, system-ui, sans-serif;
+  --bg: #F6F7FA; --surface: #FFFFFF; --ink: #1B2340; --muted: #5E6680; --line: #E2E5EE; --line-strong: #CBD1DF;
+  --accent: #2F4BD8; --accent-soft: #EBEEFC; --me: #2F4BD8; --me-ink: #FFFFFF;
+  --hl: #FFE45C; --hl-soft: rgba(255, 228, 92, .55);
+  --signal: #B26A12; --signal-soft: #FBF0DF; --good: #1F8A5B; --good-soft: #E3F3EB; --bad: #C2453D; --bad-soft: #FBE7E5;
+  --font-display: "Hahmlet", "IBM Plex Sans KR", Georgia, serif;
+  --font-serif: "Hahmlet", Georgia, "Apple SD Gothic Neo", serif;
   --font-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", -apple-system, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --font-mono: "IBM Plex Sans KR", "Apple SD Gothic Neo", -apple-system, system-ui, sans-serif;
+  --shadow: 0 1px 2px rgba(27, 35, 64, .05), 0 6px 18px rgba(27, 35, 64, .06);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0F141C; --surface: #18202B; --ink: #E7ECF3; --muted: #95A1B2; --line: #2A3442;
-    --accent: #7FA6F5; --accent-soft: #1C2A44; --me: #3D6FD9; --me-ink: #FFFFFF;
-    --signal: #E8A65A; --signal-soft: #33281A; --good: #5CC795; --good-soft: #17302A; --bad: #E88080; --bad-soft: #3A1E22;
+    --bg: #0E1322; --surface: #161C30; --ink: #E8EBF5; --muted: #98A0B8; --line: #262E47; --line-strong: #36405E;
+    --accent: #8EA2FF; --accent-soft: #1D2547; --me: #4560E6; --me-ink: #FFFFFF;
+    --hl: #E8C547; --hl-soft: rgba(232, 197, 71, .30);
+    --signal: #E7A85A; --signal-soft: #33281A; --good: #5CC795; --good-soft: #15302A; --bad: #EE8A82; --bad-soft: #3A1E22;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 22px rgba(0, 0, 0, .25);
     color-scheme: dark;
   }
 }
@@ -41,7 +46,7 @@ button:focus-visible, textarea:focus-visible, select:focus-visible, input:focus-
 
 header { border-bottom: 1px solid var(--line); background: var(--surface); flex: none; }
 header .wrap { display: flex; align-items: center; gap: 12px; padding-block: 12px; }
-.brand { font-family: var(--font-display); font-weight: 700; font-size: 21px; letter-spacing: -0.01em; }
+.brand { font-family: var(--font-display); font-weight: 700; font-size: 22px; letter-spacing: -0.01em; }
 .brand span { color: var(--accent); }
 .scene-tag { margin-left: auto; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .icon-btn { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 8px 14px; font-size: 14px; }
@@ -50,13 +55,13 @@ main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: tou
 
 /* Setup */
 .setup { padding-block: 28px 48px; display: grid; gap: 30px; }
-.setup h1 { font-family: var(--font-display); font-size: clamp(28px, 4vw, 38px); line-height: 1.15; margin: 0; text-wrap: balance; letter-spacing: -0.02em; }
+.setup h1 { font-family: var(--font-display); font-weight: 700; font-size: clamp(30px, 4.2vw, 42px); line-height: 1.18; margin: 4px 0 0; text-wrap: balance; letter-spacing: -0.015em; }
 .lead { margin: 8px 0 0; color: var(--muted); max-width: 62ch; }
-.group-label { font-size: 12.5px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
+.group-label { font-size: 16px; font-weight: 600; color: var(--ink); margin-bottom: 12px; display: flex; gap: 8px; align-items: center; }
 .chip { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 9px; border-radius: 99px; background: var(--signal-soft); color: var(--signal); text-transform: none; letter-spacing: 0; }
 .scenes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 12px; }
 .scene {
-  text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px;
+  text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 14px 16px; box-shadow: var(--shadow);
   display: grid; grid-template-columns: 64px 1fr; column-gap: 14px; align-items: center; min-height: 92px;
 }
 .scene[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); background: var(--accent-soft); }
@@ -75,9 +80,10 @@ main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: tou
 .seg { border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 10px 20px; font-size: 15px; }
 .seg[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 .start-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
-.primary { background: var(--accent); color: #fff; border: 0; border-radius: 12px; padding: 15px 28px; font-weight: 600; font-size: 17px; }
+.primary { background: var(--accent); color: #fff; border: 0; border-radius: 14px; padding: 15px 26px; font-weight: 600; font-size: 17px; box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 28%, transparent); }
+:root .primary:hover { filter: brightness(1.05); }
 .primary:disabled { opacity: .45; cursor: default; }
-.ghost { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 13px 20px; font-weight: 600; }
+.ghost { border: 1px solid var(--line-strong); background: var(--surface); border-radius: 14px; padding: 13px 20px; font-weight: 600; color: var(--ink); }
 .note { font-size: 14px; color: var(--muted); }
 
 .keycard { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; display: grid; gap: 12px; }
@@ -118,7 +124,7 @@ main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: tou
 .stage.talking .face { box-shadow: 0 0 0 4px var(--surface), 0 0 0 7px var(--accent); }
 .stage.listening .face { box-shadow: 0 0 0 4px var(--surface), 0 0 0 7px var(--good); }
 .stage .info { display: grid; gap: 4px; min-width: 0; }
-.stage .name { font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1.15; }
+.stage .name { font-family: var(--font-display); font-weight: 700; font-size: 26px; line-height: 1.15; }
 .stage .job { font-size: 14.5px; color: var(--muted); }
 .stage .desc { font-size: 14.5px; }
 .stage .tip { font-size: 13px; color: var(--muted); }
@@ -132,9 +138,9 @@ main { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: tou
 .msg.ai { align-self: flex-start; flex-direction: row; gap: 10px; align-items: flex-start; max-width: 90%; }
 .msg.ai .mini-face { width: 38px; height: 38px; flex: none; margin-top: 20px; }
 .msg.ai .col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.who { font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.bubble { padding: 12px 16px; border-radius: 16px; font-size: 18px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ai .bubble { background: var(--surface); border: 1px solid var(--line); border-top-left-radius: 4px; }
+.who { font-size: 13px; font-weight: 600; color: var(--muted); }
+.bubble { padding: 13px 17px; border-radius: 18px; font-family: var(--font-serif); font-size: 19px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai .bubble { background: var(--surface); border: 1px solid var(--line); border-top-left-radius: 6px; box-shadow: var(--shadow); }
 .me .bubble { background: var(--me); color: var(--me-ink); border-top-right-radius: 4px; }
 .bubble.thinking { color: var(--muted); font-style: italic; }
 .tools { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -183,14 +189,14 @@ textarea {
 /* Feedback */
 .feedback { padding-block: 28px 48px; display: grid; gap: 24px; }
 .fb-head { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
-.score { font-family: var(--font-mono); font-size: 52px; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.score { font-family: var(--font-display); font-weight: 700; font-size: 56px; line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
 .score small { font-size: 18px; color: var(--muted); }
-.fb-head h2 { font-family: var(--font-display); margin: 0; font-size: 28px; }
+.fb-head h2 { font-family: var(--font-display); margin: 0; font-size: 28px; font-weight: 700; }
 .fb-head p { margin: 4px 0 0; color: var(--muted); max-width: 60ch; }
-.fb-section h3 { font-size: 12.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; }
+.fb-section h3 { font-size: 17px; font-weight: 600; color: var(--ink); margin: 0 0 12px; }
 .corr { display: grid; gap: 12px; }
 .corr-item { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 4px; }
-.corr-item .new { font-size: 18px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.corr-item .new { font-family: var(--font-serif); font-size: 19px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .corr-item .why { font-size: 15px; color: var(--muted); }
 .expr { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 12px; }
 .expr-item { background: var(--good-soft); border: 0; text-align: left; border-radius: 14px; padding: 12px 14px; display: grid; gap: 2px; }
@@ -202,8 +208,8 @@ textarea {
 /* Login */
 .login { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center;
   padding: max(24px, env(safe-area-inset-top, 0px)) max(20px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(20px, env(safe-area-inset-left, 0px)); }
-.login form { width: 100%; max-width: 380px; display: grid; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 28px 24px; }
-.login .brand { font-size: 26px; text-align: center; }
+.login form { width: 100%; max-width: 400px; display: grid; gap: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 34px 28px; box-shadow: var(--shadow); }
+.login .brand { font-size: 32px; text-align: center; }
 .login .sub { text-align: center; color: var(--muted); font-size: 14.5px; margin: -6px 0 6px; }
 .login label { display: grid; gap: 6px; font-size: 14px; color: var(--muted); }
 .login input[type=text], .login input[type=password] { font: inherit; font-size: 17px; padding: 13px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
@@ -848,6 +854,26 @@ textarea {
   }
 
   // ---------- prompts ----------
+  let lessonCtx = null; // English course lesson the learner just studied (null = free talk)
+  function targetsNow() {
+    if (lang !== "en") return [];
+    if (lessonCtx) return lessonCtx.grammar.map(g => `${g.form} (e.g. ${g.ex[0].t})`);
+    return (window.TP && window.TP.learnedTargets) ? window.TP.learnedTargets("en") : [];
+  }
+  function lessonPart() {
+    if (lang !== "en") return "";
+    if (lessonCtx) return `
+LESSON MODE: the learner has just studied this model dialogue for this scene:
+${lessonCtx.dialogue.map(d => (d.who === "me" ? "LEARNER: " : "YOU: ") + d.t).join("\n")}
+Target expressions: ${targetsNow().join("; ")}.
+- Play the same scene with a similar flow, but change some details (numbers, dates, names, add one small new question) so it is real practice, not a memory test.
+- Give the learner natural chances to use the target expressions.
+- If the learner gets stuck, answers in Korean, or gives a very short answer, reply in character with a short line that models one target expression, then ask again simply.`;
+    const t = targetsNow();
+    return t.length ? `
+The learner has studied these expressions in lessons: ${t.join("; ")}.
+- When it fits naturally, create chances for the learner to use them. Never force or mention them.` : "";
+  }
   function rules() {
     const lv = curLevel();
     if (isVi()) return `You are role-playing for a Vietnamese speaking practice app. The learner is a Korean engineer living in Vietnam who is a beginner in Vietnamese. He speaks by voice; his words reach you through Vietnamese speech recognition, so they may be imperfect or have wrong tones. Guess the intended meaning generously.
@@ -871,7 +897,7 @@ RULES:
 - No lists, no markdown, no emojis, no asterisks or emphasis marks, no stage directions.
 - Usually end with a question or prompt so the learner keeps talking.
 - Do NOT correct the learner's grammar during the conversation. If you don't understand, ask naturally like a real person would.
-- If the learner speaks Korean, gently reply in English and keep the scene going.`;
+- If the learner speaks Korean, gently reply in English and keep the scene going.${lessonPart()}`;
   }
   function apiMessages() {
     const raw = [{ role: "user", content: "(The learner is ready. Say your first line to start the scene.)" }, ...turns.slice(-30)];
@@ -984,7 +1010,8 @@ RULES:
     turns = []; stopListening(); cancelSpeech();
     const p = LOOK[scene.id];
     $("stageFace").innerHTML = avatar(scene.id);
-    $("stageName").textContent = p.name; $("stageJob").textContent = p.job; $("stageDesc").textContent = scene.desc;
+    $("stageName").textContent = p.name; $("stageJob").textContent = p.job;
+    $("stageDesc").textContent = lessonCtx ? `레슨 실전 · ${lessonCtx.title} — 배운 표현을 써 보세요` : scene.desc;
     $("log").replaceChildren(); $("status").textContent = ""; $("hintBox").hidden = true; $("input").value = "";
     show("chat");
     aiTurn();
@@ -998,7 +1025,7 @@ RULES:
     try {
       const text = await ask({
         system: rules() + "\n\nNow you are NOT the character. You are a helper suggesting what the learner could say.",
-        messages: [{ role: "user", content: `Conversation so far:\n${turns.slice(-8).map(t => (t.role === "user" ? "Learner: " : "Partner: ") + t.content).join("\n")}\n\nSuggest 2 different natural replies the LEARNER could say next to "${last ? last.content : ""}", in ${LANGS[lang].name}, matching the level. Each reply MUST be 12 words or fewer and easy to say aloud. Reply with only JSON: ${isVi() ? '{"options":[{"t":"Vietnamese sentence with diacritics","read":"Korean Hangul pronunciation of the WHOLE sentence, Hangul only, e.g. 씬 짜오 아잉","ko":"한국어 뜻"}]}' : '{"options":[{"t":"English sentence","ko":"한국어 뜻"}]}'}` }],
+        messages: [{ role: "user", content: `Conversation so far:\n${turns.slice(-8).map(t => (t.role === "user" ? "Learner: " : "Partner: ") + t.content).join("\n")}\n\nSuggest 2 different natural replies the LEARNER could say next to "${last ? last.content : ""}", in ${LANGS[lang].name}, matching the level. Each reply MUST be 12 words or fewer and easy to say aloud.${targetsNow().length ? " At least one reply should use one of these studied expressions: " + targetsNow().join("; ") + "." : ""} Reply with only JSON: ${isVi() ? '{"options":[{"t":"Vietnamese sentence with diacritics","read":"Korean Hangul pronunciation of the WHOLE sentence, Hangul only, e.g. 씬 짜오 아잉","ko":"한국어 뜻"}]}' : '{"options":[{"t":"English sentence","ko":"한국어 뜻"}]}'}` }],
         max_tokens: 400, model: isVi() ? MODEL_COACH : MODEL_CHAT,
       });
       const data = parseJSON(text);
@@ -1047,7 +1074,9 @@ Return only JSON in this shape:
  "corrections": [{"original": "learner's sentence", "better": "corrected, natural ${LANGS[lang].name} version"${viCoach ? ', "read": "better 문장의 한글 발음"' : ""}, "ko": "better 문장의 한국어 뜻", "why_ko": "짧은 한국어 설명"}],
  "expressions": [{"t": "useful ${LANGS[lang].name} phrase for this scene"${viCoach ? ', "read": "한글 발음"' : ""}, "ko": "한국어 뜻"}],
  "patterns": [{"frame": "reusable sentence frame with ___ slots, taken from what the learner needed (e.g. Could you send me ___ by ___?)", "ko": "틀의 한국어 뜻 (___ 자리 표시)", "use_ko": "언제 쓰는지 한 줄", "examples": [{"t": "frame filled with different words", "ko": "한국어 뜻"}]}],
- "script": [{"who": "partner or me", "t": "line", "ko": "한국어 뜻"}]}
+ "script": [{"who": "partner or me", "t": "line", "ko": "한국어 뜻"}]${targetsNow().length ? `,
+ "targets": [{"t": "studied expression", "used": true or false, "said": "the learner's sentence where it was used (or tried), else empty"}]` : ""}}${targetsNow().length ? `
+Studied expressions to check (one "targets" item each): ${targetsNow().join("; ")}.` : ""}
 Rules:
 - corrections: the 5 MOST important problems only, most important first. "better" must keep what the learner meant — fix the language, never invent new content or answers he did not give. One correction per learner sentence. Every learner sentence that was said in Korean/English must be included${viCoach ? "" : " if any"}. why_ko is required for each.
 - patterns: 2-3 frames the learner can reuse by swapping words; each with exactly 3 examples using different words.
@@ -1112,6 +1141,19 @@ Rules:
       });
       s2.append(grid); fv.append(s2);
     }
+    const targets = Array.isArray(d.targets) ? d.targets.filter(x => x && x.t) : [];
+    if (targets.length) {
+      const s0 = document.createElement("div"); s0.className = "fb-section";
+      const h0 = document.createElement("h3"); h0.textContent = `배운 표현 활용 · ${targets.filter(x => x.used).length}/${targets.length}`; s0.append(h0);
+      const box = document.createElement("div"); box.className = "corr";
+      targets.forEach(x => {
+        const it = document.createElement("div"); it.className = "corr-item target " + (x.used ? "used" : "missed");
+        const t = document.createElement("div"); t.className = "new"; t.textContent = (x.used ? "✓ " : "✗ ") + String(x.t);
+        const w = document.createElement("div"); w.className = "why"; w.textContent = x.used ? ("내가 한 말: " + String(x.said || "")) : (x.said ? "시도: " + x.said : "이번 대화에서는 안 썼어요. 다음엔 꼭 써 보세요.");
+        it.append(t, w); box.append(it);
+      });
+      s0.append(box); fv.append(s0);
+    }
     if (patterns.length) {
       const s3 = document.createElement("div"); s3.className = "fb-section";
       const h3 = document.createElement("h3"); h3.textContent = "외워두면 단어만 바꿔 쓰는 문장 틀"; s3.append(h3);
@@ -1130,7 +1172,7 @@ Rules:
       });
       s3.append(grid); fv.append(s3);
     }
-    const note = window.TP && window.TP.makeNote ? window.TP.makeNote({ lang, level, scene, d: { ...d, corrections, patterns }, turns }) : null;
+    const note = window.TP && window.TP.makeNote ? window.TP.makeNote({ lang, level, scene, d: { ...d, corrections, patterns }, turns, lessonId: lessonCtx ? lessonCtx.id : null }) : null;
     if (note) {
       const saved = document.createElement("div"); saved.className = "empty-good"; saved.id = "savedMsg";
       saved.textContent = `학습 노트를 저장했어요 · 복습 카드 ${note.cardCount}개 추가`;
@@ -1299,6 +1341,7 @@ Rules:
     // iPad: unlock speech output and ask for the microphone inside this tap
     try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch {}
     try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); } catch {}
+    lessonCtx = null;
     startChat();
   };
   $("homeBtn").onclick = () => {
@@ -1340,9 +1383,12 @@ Rules:
     connected: () => !!apiKey || !!BUILTIN_RELAY,
     useBuiltin: () => providerOf(apiKey) === "builtin",
     show, renderSetup,
-    startScene(id) {
+    async startScene(id, ctx) {
       const sc = SCENES.find(x => x.id === id); if (!sc) return;
+      try { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } catch {}
+      try { const st = await navigator.mediaDevices.getUserMedia({ audio: true }); st.getTracks().forEach(t => t.stop()); } catch {}
       scene = sc; if (lang !== sc.lang) { lang = sc.lang; store.set("tp_lang", lang); }
+      lessonCtx = ctx && ctx.lessonId && window.TP.lessonById ? window.TP.lessonById(ctx.lessonId) : null;
       startChat();
     },
   });
@@ -1351,6 +1397,7 @@ Rules:
 })();
 </script>
 <script src="vi-course.js"></script>
+<script src="en-course.js"></script>
 <script src="study.js"></script>
 </body>
 </html>
