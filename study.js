@@ -4,7 +4,7 @@
   const TP = window.TP;
   if (!TP) return;
   const COURSE = window.VI_COURSE || [];
-  const EN = window.EN_COURSE || [];
+  const UNITS = window.EN_UNITS || [];
   const DAY = 864e5;
   const BOX_DAYS = [0, 1, 3, 7, 14, 30];
   const $ = (id) => document.getElementById(id);
@@ -90,10 +90,29 @@
   }
 
   // ---------- state + cloud sync ----------
-  const LKEY = "tp_state_v1";
-  const blank = () => ({ v: 1, updatedAt: 0, notes: [], cards: [], vi: { done: {} }, en: { done: {}, reh: {}, talk: {} } });
-  const fixShape = (o) => { o.vi = o.vi || { done: {} }; o.en = Object.assign({ done: {}, reh: {}, talk: {} }, o.en || {}); return o; };
-  let S = (() => { try { return fixShape(Object.assign(blank(), JSON.parse(localStorage.getItem(LKEY) || "null") || {})); } catch { return blank(); } })();
+  // Each account keeps its own copy on this device (key from the login token) and its own slot in the cloud.
+  const lkey = () => "tp_state_v1_" + String((TP.relayToken && TP.relayToken()) || "anon").slice(0, 12);
+  const blank = () => ({ v: 1, updatedAt: 0, notes: [], cards: [], vi: { done: {} }, en: { done: {}, reh: {}, talk: {}, custom: [], last: "" } });
+  const fixShape = (o) => {
+    o.vi = o.vi || { done: {} };
+    o.en = Object.assign({ done: {}, reh: {}, talk: {}, custom: [], last: "" }, o.en || {});
+    if (!Array.isArray(o.en.custom)) o.en.custom = [];
+    return o;
+  };
+  const loadLocal = () => { try { return fixShape(Object.assign(blank(), JSON.parse(localStorage.getItem(lkey()) || "null") || {})); } catch { return blank(); } };
+  let S = loadLocal();
+
+  // English course with the signed-in learner's name filled in, plus lessons the AI wrote for this account
+  let BASE = [];
+  function personalize(v, u) {
+    if (typeof v === "string") return v.replace(/\{NAME\}/g, u.en || "Kim").replace(/\{KNAME\}/g, u.id || "김");
+    if (Array.isArray(v)) return v.map(x => personalize(x, u));
+    if (v && typeof v === "object") { const o = {}; for (const k of Object.keys(v)) o[k] = personalize(v[k], u); return o; }
+    return v;
+  }
+  function loadCourse() { BASE = personalize(window.EN_COURSE || [], TP.user ? TP.user() : { id: "", en: "" }); }
+  loadCourse();
+  const allEN = () => BASE.concat(S.en.custom || []);
   let syncState = "local", saveTimer = null;
   const cloudURL = () => TP.BUILTIN_RELAY ? TP.BUILTIN_RELAY.replace(/\/+$/, "") + "/store/state" : "";
   const cloudOn = () => !!(cloudURL() && TP.useBuiltin() && TP.relayToken());
@@ -105,7 +124,7 @@
   }
   function persist() {
     S.updatedAt = Date.now();
-    try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch {}
+    try { localStorage.setItem(lkey(), JSON.stringify(S)); } catch {}
     if (!cloudOn()) { setSync("local"); return; }
     setSync("saving");
     clearTimeout(saveTimer);
@@ -125,7 +144,7 @@
       const remote = await r.json();
       if (remote && remote.updatedAt > (S.updatedAt || 0)) {
         S = fixShape(Object.assign(blank(), remote));
-        try { localStorage.setItem(LKEY, JSON.stringify(S)); } catch {}
+        try { localStorage.setItem(lkey(), JSON.stringify(S)); } catch {}
       } else if ((S.updatedAt || 0) > ((remote && remote.updatedAt) || 0)) { persist(); return; }
       setSync("saved"); refreshHome();
     } catch { setSync("error"); }
@@ -177,11 +196,12 @@
   // expressions the learner has studied (used by free talk prompts)
   TP.learnedTargets = (lang) => {
     if (lang !== "en") return [];
+    const recent = allEN().filter(L => S.en.done[L.id]).sort((a, b) => (S.en.done[b.id].date || 0) - (S.en.done[a.id].date || 0)).slice(0, 4);
     const out = [];
-    for (const L of EN) if (S.en.done[L.id]) for (const g of L.grammar) out.push(`${g.form} (e.g. ${g.ex[0].t})`);
-    return out.slice(-12);
+    for (const L of recent) for (const g of L.grammar) out.push(`${g.form} (e.g. ${g.ex[0].t})`);
+    return out;
   };
-  TP.lessonById = (id) => EN.find(l => l.id === id) || null;
+  TP.lessonById = (id) => allEN().find(l => l.id === id) || null;
 
   // ---------- AI instant feedback ----------
   // Judges an answer that did not match the model sentence: accepts natural alternatives, explains real mistakes.
@@ -248,7 +268,7 @@ Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentenc
   TP.onRenderSetup = refreshHome;
   TP.onLang = () => { tab = getTab(TP.getLang()); refreshHome(); };
   TP.onHome = () => { stopAll(); };
-  TP.onLogin = () => { cloudLoad(); refreshHome(); };
+  TP.onLogin = () => { S = loadLocal(); loadCourse(); cloudLoad(); refreshHome(); };
 
   // ---------- study screen plumbing ----------
   let stopFlag = 0;
@@ -565,37 +585,159 @@ Return only JSON: {"ok": true if the learner's sentence is natural, correct and 
     return { id: L.id, lessonId: L.id, lang: "en", sceneId: L.scene, sceneTitle: L.title, partner: (TP.LOOK[L.scene] || {}).name || "",
       script: L.dialogue.map(d => ({ who: d.who, t: d.t, ko: d.ko })), rehearsal: S.en.reh[L.id] };
   }
+  // ---------- English course: units ----------
+  const unitOf = (L) => UNITS.find(u => u.id === L.unit) || { id: L.unit, title: "", icon: "", desc: "" };
+  const unitLessons = (uid) => allEN().filter(l => l.unit === uid);
+  const fullyDone = (L) => !!(S.en.done[L.id] && S.en.talk[L.id]);
+  function nextLesson() {
+    const all = allEN();
+    const last = S.en.last && all.find(l => l.id === S.en.last);
+    if (last && !fullyDone(last)) return last;
+    if (last) { const u = unitLessons(last.unit), i = u.indexOf(last); const nx = u.slice(i + 1).find(l => !S.en.done[l.id]); if (nx) return nx; }
+    return all.find(l => !S.en.done[l.id]) || all[0];
+  }
+  const OPEN_KEY = "tp_units_open";
+  const getOpenUnits = () => { try { const v = JSON.parse(localStorage.getItem(OPEN_KEY) || "null"); return Array.isArray(v) ? v : null; } catch { return null; } };
+  const setOpenUnits = (v) => { try { localStorage.setItem(OPEN_KEY, JSON.stringify(v)); } catch {} };
+  function progMarks(L) {
+    const done = S.en.done[L.id], reh = S.en.reh[L.id], talk = S.en.talk[L.id];
+    const marks = h("div", { class: "lr-prog" },
+      h("i", { class: done ? "on" : "", title: "학습" }), h("i", { class: reh && reh.best ? "on" : "", title: "리허설" }), h("i", { class: talk ? "on" : "", title: "실전" }));
+    const txt = talk ? `실전 ${talk.score}점` : reh && reh.best ? `리허설 ${reh.best}%` : done ? `학습 ${done.quiz || "✓"}` : "";
+    return h("div", { class: "lr-state" }, marks, txt ? h("small", { text: txt }) : null);
+  }
   function enCoursePanel() {
-    const tile = (L) => {
-      const done = S.en.done[L.id], reh = S.en.reh[L.id], talk = S.en.talk[L.id];
-      const look = TP.LOOK[L.scene] || {};
-      return h("button", { class: "en-lesson" + (done ? " done" : ""), onclick: () => openEnLesson(L) },
-        h("div", { class: "el-face", html: true }),
-        h("div", { class: "el-txt" },
-          h("small", { class: "el-tag", text: `${look.name || ""} · ${look.job || ""}` }),
-          h("b", { text: L.title }),
-          h("span", { class: "el-goal", text: L.goal }),
-          h("div", { class: "el-prog" },
-            h("span", { class: done ? "on" : "", text: done ? `학습 ✓ ${done.quiz || ""}` : "학습" }),
-            h("span", { class: reh && reh.best ? "on" : "", text: reh && reh.best ? `리허설 ${reh.best}%` : "리허설" }),
-            h("span", { class: talk ? "on" : "", text: talk ? `실전 ${talk.score}점` : "실전" }))));
-    };
-    const work = EN.filter(l => ["claim", "8d", "audit", "delay"].includes(l.scene)), life = EN.filter(l => !["claim", "8d", "audit", "delay"].includes(l.scene));
-    const wrap = h("div", { class: "course" },
-      h("div", { class: "group-label", text: `업무 상황 · ${work.filter(l => S.en.done[l.id]).length}/${work.length}` }), h("div", { class: "en-lessons" }, ...work.map(tile)),
-      h("div", { class: "group-label", text: `생활 · 사교 · ${life.filter(l => S.en.done[l.id]).length}/${life.length}` }), h("div", { class: "en-lessons" }, ...life.map(tile)));
-    wrap.querySelectorAll(".el-face").forEach((el, i) => { el.innerHTML = TP.avatar([...work, ...life][i].scene); });
+    const all = allEN();
+    const nx = nextLesson();
+    const wrap = h("div", { class: "course" });
+    if (nx) {
+      const u = unitOf(nx), look = TP.LOOK[nx.scene] || {}, pos = unitLessons(nx.unit).indexOf(nx) + 1;
+      const started = S.en.last === nx.id;
+      const face = h("div", { class: "cont-face" }); face.innerHTML = TP.avatar(nx.scene);
+      wrap.append(h("div", { class: "cont-card" }, face,
+        h("div", { class: "cont-txt" },
+          h("small", { text: `${started ? "이어서 하기" : "다음 레슨"} · ${u.title} ${pos}번째` }),
+          h("b", { text: nx.title }),
+          h("span", { text: nx.goal })),
+        h("button", { class: "primary", text: started ? "이어서 하기" : "시작하기", onclick: () => openEnLesson(nx, S.en.done[nx.id] && !S.en.talk[nx.id] ? 4 : 0) })));
+    }
+    const nDone = all.filter(l => S.en.done[l.id]).length, nTalk = all.filter(l => S.en.talk[l.id]).length;
+    wrap.append(h("div", { class: "course-stat", text: `레슨 ${all.length}개 중 ${nDone}개 학습 · 실전 대화 ${nTalk}개 완료` }));
+    let open = getOpenUnits();
+    if (!open) open = nx ? [nx.unit] : [UNITS[0] && UNITS[0].id];
+    for (const u of UNITS) {
+      const list = unitLessons(u.id), dn = list.filter(l => S.en.done[l.id]).length;
+      const isOpen = open.includes(u.id);
+      const body = h("div", { class: "unit-body", hidden: !isOpen });
+      const head = h("button", { class: "unit-head", "aria-expanded": String(isOpen), onclick: () => {
+        const now = body.hidden; body.hidden = !now; head.setAttribute("aria-expanded", String(now));
+        const cur = (getOpenUnits() || open).filter(x => x !== u.id); if (now) cur.push(u.id); setOpenUnits(cur); open = cur;
+        if (now && !body.childElementCount) fillUnit(body, u);
+      } },
+        h("span", { class: "unit-ic", text: u.icon }),
+        h("span", { class: "unit-txt" }, h("b", { text: u.title }), h("small", { text: u.desc })),
+        h("span", { class: "unit-count" }, h("span", { text: `${dn}/${list.length}` }), h("span", { class: "unit-bar" }, h("i", { style: `width:${list.length ? Math.round(100 * dn / list.length) : 0}%` }))),
+        h("span", { class: "unit-chev", text: "›" }));
+      if (isOpen) fillUnit(body, u);
+      wrap.append(h("section", { class: "unit" }, head, body));
+    }
     return wrap;
+  }
+  function fillUnit(body, u) {
+    const list = unitLessons(u.id);
+    const rows = list.map((L, i) => {
+      const look = TP.LOOK[L.scene] || {};
+      const face = h("div", { class: "lr-face" }); face.innerHTML = TP.avatar(L.scene);
+      return h("button", { class: "lrow" + (S.en.done[L.id] ? " done" : "") + (S.en.last === L.id ? " last" : ""), onclick: () => openEnLesson(L) },
+        h("span", { class: "lr-num", text: String(i + 1) }), face,
+        h("span", { class: "lr-txt" },
+          h("b", {}, L.title, L.custom ? h("span", { class: "ai-chip", text: "AI" }) : null),
+          h("small", { text: `${look.name || ""} · ${L.goal}` })),
+        progMarks(L));
+    });
+    rc(body, ...rows, genBox(u));
+  }
+
+  // ---------- AI-written scenario lessons ----------
+  function normalizeLesson(j, unit) {
+    if (!j || typeof j !== "object") throw new Error("AI 응답 형식이 맞지 않아요");
+    const str = (x) => typeof x === "string" ? x.trim() : "";
+    const clean = (t) => TP.cleanSpoken(str(t)).replace(/\s+/g, " ").trim();
+    const grammar = (Array.isArray(j.grammar) ? j.grammar : []).slice(0, 3).map(g => ({
+      title: str(g && g.title), form: str(g && g.form), ko: str(g && g.ko),
+      ex: (Array.isArray(g && g.ex) ? g.ex : []).filter(e => e && str(e.t)).slice(0, 3).map(e => ({ t: clean(e.t), ko: str(e.ko) })),
+    })).filter(g => g.form && g.ex.length);
+    if (grammar.length < 2) throw new Error("문법 부분이 비어 있어요");
+    const okG = (g) => Number.isInteger(g) && g >= 0 && g < grammar.length;
+    const dialogue = (Array.isArray(j.dialogue) ? j.dialogue : []).filter(d => d && (d.who === "me" || d.who === "partner") && str(d.t)).slice(0, 12)
+      .map(d => Object.assign({ who: d.who, t: clean(d.t), ko: str(d.ko) }, okG(d.g) ? { g: d.g } : {}));
+    if (dialogue.length < 6 || dialogue.filter(d => d.who === "me").length < 3) throw new Error("대화문이 너무 짧아요");
+    const blanks = (Array.isArray(j.blanks) ? j.blanks : []).map(b => {
+      const a = str(b && b.a);
+      return { s: str(b && b.s), a, o: [...new Set((Array.isArray(b && b.o) ? b.o : []).map(str).filter(x => x && x !== a))].slice(0, 3), g: okG(b && b.g) ? b.g : 0, ko: str(b && b.ko) };
+    }).filter(b => (b.s.match(/___/g) || []).length === 1 && b.a && b.o.length >= 2).slice(0, 4);
+    const look = TP.LOOK[unit.scene] || {};
+    return { id: "x" + uid(), unit: unit.id, scene: unit.scene, icon: str(j.icon).slice(0, 4) || "✨", title: str(j.title).slice(0, 30) || "새 시나리오",
+      goal: str(j.goal) || "새 상황에서 배운 표현을 써 본다.", role: str(j.role) || `You are ${look.name || "the partner"}. ${unit.en}`,
+      grammar, dialogue, blanks, custom: true, created: Date.now() };
+  }
+  async function generateLesson(unit, wish, onProgress) {
+    const sc = (TP.SCENES || []).find(x => x.id === unit.scene), look = TP.LOOK[unit.scene] || {};
+    const existing = unitLessons(unit.id).map(l => l.title).join(" / ");
+    const me = TP.user ? TP.user() : { en: "" };
+    const prompt = `Create ONE new English speaking lesson for a Korean FPCB process engineer (ENIG surface finish, working at a plant in Vietnam, customers in the US and Korea). Learner level: intermediate (B1).
+UNIT: ${unit.en}
+PARTNER CHARACTER: ${sc ? sc.role : (look.name || "a business partner")}
+${wish ? `THE LEARNER ASKED FOR THIS SITUATION (in Korean): "${wish}". Build the whole lesson around it.` : `Pick a realistic situation for this unit that is clearly different from these existing lessons: ${existing}.`}
+The learner's name is ${me.en || "Kim"}.
+Requirements:
+- title: Korean, max 16 characters. goal: one Korean sentence saying what the learner will be able to do.
+- icon: one emoji.
+- role: English, 2-3 sentences starting "You are ${look.name || "the partner"}," describing the partner's situation and what they push for in a free role-play later.
+- grammar: exactly 3 useful patterns for this situation, not too basic. Each: title (Korean, max 12 characters), form (the pattern with Korean placeholders such as 동사원형, 명사, 문장), ko (Korean explanation, max 70 characters; mention a common Korean learner mistake when useful), ex: exactly 2 examples {"t": English, "ko": Korean}.
+- dialogue: exactly 10 lines alternating, starting with "partner"; who is "partner" or "me". Each {"who","t","ko"}. "me" lines max 14 words, natural spoken English with realistic technical details. Mark "me" lines that practise a grammar point with "g" (0, 1 or 2); every grammar point must be practised at least once.
+- blanks: exactly 4 fill-in quizzes. Each {"s": sentence with exactly one ___, "a": the correct word(s), "o": 3 wrong options that are clearly wrong in that slot, "g": grammar index, "ko": Korean meaning}.
+- No markdown, no em dashes.
+Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","grammar":[],"dialogue":[],"blanks":[]}`;
+    const raw = await TP.ask({ system: "You write English speaking lessons for Korean engineers as strict JSON.", messages: [{ role: "user", content: prompt }], max_tokens: 4000, model: TP.MODEL_COACH, onProgress });
+    return normalizeLesson(TP.parseJSON(raw), unit);
+  }
+  function genBox(u) {
+    const input = h("input", { type: "text", class: "gen-in", placeholder: "원하는 상황 (예: 고객이 금 두께 부족을 제기) · 비워 두면 AI가 골라요", autocapitalize: "off" });
+    const status = h("div", { class: "gen-status" });
+    const btn = h("button", { class: "ghost sm", text: "✨ AI로 새 시나리오 만들기" });
+    btn.onclick = async () => {
+      btn.disabled = true; input.disabled = true;
+      const box = thinking("AI가 시나리오를 쓰는 중… 1분쯤 걸려요"); rc(status, box);
+      try {
+        const L = await generateLesson(u, input.value.trim(), (t) => { box.lastChild.textContent = ` AI가 시나리오를 쓰는 중… (${t.length}자)`; });
+        S.en.custom.push(L); S.en.last = L.id; persist();
+        openEnLesson(L);
+      } catch (e) {
+        rc(status, h("div", { class: "ai-box warn" }, h("b", { text: "시나리오를 만들지 못했어요" }), h("div", { class: "note", text: ((e && e.message) || (TP.errText ? TP.errText(e) : String(e))) + " · 다시 눌러 주세요." })));
+        btn.disabled = false; input.disabled = false;
+      }
+    };
+    return h("div", { class: "gen-box" }, h("div", { class: "gen-row" }, input, btn), status);
+  }
+  function deleteCustom(L) {
+    if (!L.custom) return;
+    S.en.custom = S.en.custom.filter(x => x.id !== L.id);
+    delete S.en.done[L.id]; delete S.en.reh[L.id]; delete S.en.talk[L.id];
+    if (S.en.last === L.id) S.en.last = "";
+    persist(); backHome();
   }
   const EN_STEPS = [["1", "문법"], ["2", "대화 듣기"], ["3", "따라 말하기"], ["4", "퀴즈"], ["5", "리허설"], ["6", "실전 대화"]];
   function openEnLesson(L, startStep = 0) {
-    const look = TP.LOOK[L.scene] || {}, female = !!look.female;
+    const look = TP.LOOK[L.scene] || {}, female = !!look.female, job = L.job || look.job || "";
+    if (S.en.last !== L.id) { S.en.last = L.id; persist(); }
     const meVoice = { female: !female };
     const body = h("div", { class: "lesson-body" });
     const stepNav = h("div", { class: "steps big" });
     openStudy(L.title,
-      h("div", { class: "lesson-top" }, h("div", { class: "lt-face" }), h("div", {}, h("div", { class: "note", text: `상대: ${look.name || ""} · ${look.job || ""}` }), h("div", { class: "lt-goal", text: "목표 · " + L.goal })),
-        h("button", { class: "ghost sm", text: "PDF 학습지", onclick: () => TP.exportEnLessonPDF(L) })),
+      h("div", { class: "lesson-top" }, h("div", { class: "lt-face" }), h("div", {}, h("div", { class: "note", text: `${unitOf(L).title} · 상대: ${look.name || ""} · ${job}` }), h("div", { class: "lt-goal", text: "목표 · " + L.goal })),
+        h("button", { class: "ghost sm", text: "PDF 학습지", onclick: () => TP.exportEnLessonPDF(L) }),
+        L.custom ? h("button", { class: "ghost sm", text: "이 레슨 삭제", onclick: () => deleteCustom(L) }) : null),
       stepNav, body);
     document.querySelector(".lt-face").innerHTML = TP.avatar(L.scene);
     let step = startStep, tok = 0;
@@ -774,8 +916,10 @@ Return only JSON: {"ok": true if the learner's sentence is natural, correct and 
         h("div", { class: "note", text: `같은 상황이지만 ${look.name}가 숫자·날짜·질문을 조금씩 바꿔서 말해요. 오늘 배운 표현을 쓸 기회를 만들어 주고, 끝나면 교정 노트에서 배운 표현을 썼는지 체크해 드려요.` }),
         h("div", { class: "g-list" }, ...L.grammar.map(g => h("div", { class: "g-mini" }, h("b", { text: g.title }), " ", h("span", { class: "hl", text: g.form })))),
         talk ? h("div", { class: "note", text: `지난 실전: ${fmtDate(talk.date)} · ${talk.score}점` }) : null,
-        h("div", { class: "fb-actions" }, h("button", { class: "primary", text: "💬 실전 대화 시작", onclick: () => TP.startScene(L.scene, { lessonId: L.id }) }))));
+        h("div", { class: "fb-actions" }, h("button", { class: "primary", text: "💬 실전 대화 시작", onclick: () => TP.startScene(L.scene, { lessonId: L.id }) }),
+          nextInUnit ? h("button", { class: "ghost", text: `다음 레슨: ${nextInUnit.title}`, onclick: () => openEnLesson(nextInUnit) }) : null)));
     }
+    const unitList = unitLessons(L.unit), nextInUnit = unitList[unitList.indexOf(L) + 1] || null;
     draw();
   }
 
@@ -1069,6 +1213,55 @@ Return only JSON: {"ok": true if the learner's sentence is natural, correct and 
   .el-prog { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 8px; }
   .el-prog span { font-size: 12px; color: var(--muted); padding-top: 6px; border-top: 4px solid var(--line); }
   .el-prog span.on { color: var(--ink); border-top-color: var(--good); font-weight: 600; }
+  .cont-card { display: grid; grid-template-columns: 84px 1fr auto; gap: 18px; align-items: center; padding: 20px 22px; border-radius: 24px; background: var(--ink); color: var(--bg); box-shadow: var(--shadow); }
+  .cont-face { width: 84px; height: 84px; border-radius: 50%; overflow: hidden; box-shadow: 0 0 0 3px color-mix(in srgb, var(--hl) 80%, transparent); }
+  .cont-face svg { width: 100%; height: 100%; }
+  .cont-txt { display: grid; gap: 4px; min-width: 0; }
+  .cont-txt small { font-size: 13px; opacity: .75; }
+  .cont-txt b { font-family: var(--font-display); font-size: 24px; line-height: 1.2; }
+  .cont-txt span { font-size: 14.5px; opacity: .85; line-height: 1.45; }
+  .cont-card .primary { background: var(--hl); color: #1B2340; border-color: var(--hl); white-space: nowrap; }
+  .course-stat { color: var(--muted); font-size: 14px; padding: 2px 4px; }
+  .unit { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; overflow: hidden; }
+  .unit-head { width: 100%; display: grid; grid-template-columns: 44px 1fr auto 20px; gap: 14px; align-items: center; padding: 16px 18px; text-align: left; background: none; border: 0; border-radius: 0; }
+  .unit-ic { font-size: 26px; text-align: center; }
+  .unit-txt { display: grid; gap: 2px; min-width: 0; }
+  .unit-txt b { font-family: var(--font-display); font-size: 19px; }
+  .unit-txt small { color: var(--muted); font-size: 13.5px; line-height: 1.4; }
+  .unit-count { display: grid; gap: 5px; justify-items: end; font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .unit-bar { width: 72px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .unit-bar i { display: block; height: 100%; background: var(--good); }
+  .unit-chev { font-size: 22px; color: var(--muted); transition: transform .2s; text-align: center; }
+  .unit-head[aria-expanded="true"] .unit-chev { transform: rotate(90deg); }
+  .unit-body { border-top: 1px solid var(--line); padding: 6px 10px 14px; display: grid; gap: 2px; }
+  .lrow { display: grid; grid-template-columns: 26px 46px 1fr auto; gap: 12px; align-items: center; padding: 10px 8px; border: 0; border-radius: 14px; background: none; text-align: left; width: 100%; }
+  .lrow:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  .lrow.last { background: color-mix(in srgb, var(--hl) 22%, transparent); }
+  .lr-num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; text-align: right; }
+  .lrow.done .lr-num { color: var(--good); font-weight: 700; }
+  .lr-face { width: 46px; height: 46px; border-radius: 50%; overflow: hidden; }
+  .lr-face svg { width: 100%; height: 100%; }
+  .lr-txt { display: grid; gap: 2px; min-width: 0; }
+  .lr-txt b { font-size: 16.5px; font-weight: 600; }
+  .lr-txt small { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ai-chip { display: inline-block; margin-left: 8px; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 8px; background: var(--accent); color: #fff; vertical-align: 2px; }
+  .lr-state { display: grid; gap: 4px; justify-items: end; }
+  .lr-state small { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .lr-prog { display: flex; gap: 3px; }
+  .lr-prog i { width: 16px; height: 5px; border-radius: 3px; background: var(--line); }
+  .lr-prog i.on { background: var(--good); }
+  .gen-box { margin-top: 8px; padding: 12px 8px 0; border-top: 1px dashed var(--line-strong); display: grid; gap: 10px; }
+  .gen-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .gen-in { flex: 1 1 260px; min-width: 0; padding: 10px 14px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--bg); color: var(--ink); font: inherit; font-size: 15px; }
+  @media (max-width: 640px) {
+    .cont-card { grid-template-columns: 64px 1fr; }
+    .cont-face { width: 64px; height: 64px; }
+    .cont-card .primary { grid-column: 1 / -1; }
+    .lrow { grid-template-columns: 22px 40px 1fr; }
+    .lr-face { width: 40px; height: 40px; }
+    .lr-state { grid-column: 3; justify-items: start; }
+    .unit-head { grid-template-columns: 36px 1fr auto 16px; padding: 14px; }
+  }
   .lesson-top { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
   .lesson-top > div:nth-child(2) { flex: 1; min-width: 200px; }
   .lt-face { width: 64px; height: 64px; border-radius: 50%; overflow: hidden; flex: none; }
