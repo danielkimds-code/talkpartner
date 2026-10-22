@@ -11,6 +11,9 @@
 
 const UPSTREAM = "https://aiapiflow.com";
 const API_KEY = "";    // sk-... (built-in key, optional)
+const GEMINI_KEY = ""; // Google AI Studio key for speech-to-text (optional)
+// tried in order; the next one is used when a model is busy or out of free quota
+const STT_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest"];
 // login-derived token -> storage slot ("" keeps the first account's original keys)
 const APP_TOKENS = {};
 const ALLOWED_ORIGINS = ["https://danielkimds-code.github.io"];
@@ -53,6 +56,42 @@ export default {
         return new Response('{"ok":true}', { headers: { ...cors, "content-type": "application/json" } });
       }
       return json(405, "Method not allowed");
+    }
+
+    // Speech-to-text: the app sends a short WAV recording plus a prompt with the conversation context.
+    if (url.pathname === "/stt") {
+      if (request.method === "OPTIONS") return new Response(null, { status: allowed ? 204 : 403, headers: cors });
+      if (!allowed) return json(403, "Forbidden origin");
+      if (!known(request.headers.get("x-tp-token") || "")) return json(401, "Login token invalid");
+      const okJson = (o) => new Response(JSON.stringify(o), { headers: { ...cors, "content-type": "application/json" } });
+      if (request.method === "GET") return okJson({ ready: !!GEMINI_KEY });
+      if (request.method !== "POST") return json(405, "Method not allowed");
+      if (!GEMINI_KEY) return json(501, "No speech key on this relay");
+      let body;
+      try { body = await request.json(); } catch { return json(400, "Not JSON"); }
+      const audio = String(body.audio || ""), prompt = String(body.prompt || "").slice(0, 6000);
+      const mime = /^audio\/[a-z0-9.+-]+$/.test(body.mime || "") ? body.mime : "audio/wav";
+      if (!audio || audio.length > 12000000) return json(413, "Recording missing or too long");
+      const payload = JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: audio } }] }],
+        generationConfig: { temperature: 0, maxOutputTokens: 400, responseMimeType: "application/json" },
+      });
+      let last = "No speech model answered";
+      for (const model of STT_MODELS) {
+        let r, j;
+        try {
+          r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+            method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": GEMINI_KEY }, body: payload });
+          j = await r.json();
+        } catch (e) { last = "Speech service unreachable: " + String(e && e.message || e); continue; }
+        if (r.ok) {
+          const parts = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || [];
+          return okJson({ raw: parts.map(p => p.text || "").join(""), model });
+        }
+        last = (j && j.error && j.error.message) || ("HTTP " + r.status);
+        if (![429, 500, 503, 404].includes(r.status)) return json(r.status, last);
+      }
+      return json(503, last);
     }
 
     // Opening the worker address in a browser shows this check message.

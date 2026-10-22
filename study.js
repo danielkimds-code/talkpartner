@@ -272,7 +272,8 @@ Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentenc
 
   // ---------- study screen plumbing ----------
   let stopFlag = 0;
-  function stopAll() { stopFlag++; try { TP.listenOnce.stop && TP.listenOnce.stop(); } catch {} TP.cancelSpeech(); }
+  const cancelListen = () => { try { const f = TP.listenOnce.cancel || TP.listenOnce.stop; if (f) f(); } catch {} };
+  function stopAll() { stopFlag++; cancelListen(); TP.cancelSpeech(); }
   function openStudy(title, ...content) {
     stopAll();
     const sv = $("studyView");
@@ -283,7 +284,7 @@ Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentenc
   function backHome() { stopAll(); TP.show("setup"); TP.renderSetup(); }
 
   // mic button that listens once and hands back the text
-  function micAnswer({ lang, onResult, label = "🎤 말하기" }) {
+  function micAnswer({ lang, onResult, label = "🎤 말하기", context = "" }) {
     const live = h("div", { class: "live", text: "" });
     const typed = h("div", { class: "typed", hidden: true },
       h("input", { type: "text", placeholder: "직접 입력해도 돼요", autocapitalize: "off", spellcheck: "false" }),
@@ -291,15 +292,21 @@ Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentenc
     const btn = h("button", { class: "mic-btn", text: label });
     btn.onclick = async () => {
       if (!TP.hasSR) { typed.hidden = false; typed.querySelector("input").focus(); return; }
+      if (btn.classList.contains("wait")) return;
       if (btn.classList.contains("on")) { TP.listenOnce.stop && TP.listenOnce.stop(); return; }
       btn.classList.add("on"); btn.textContent = "듣는 중… (누르면 끝)"; live.textContent = "";
       try {
-        const said = await TP.listenOnce({ lang, onInterim: (t) => { live.textContent = t; } });
-        btn.classList.remove("on"); btn.textContent = label;
+        const said = await TP.listenOnce({ lang, context, onInterim: (t) => { live.textContent = t; },
+          onLevel: (v) => btn.style.setProperty("--lvl", String(v)),
+          onPhase: (ph) => {
+            if (ph === "listen") { btn.textContent = "듣는 중… (다 말했으면 누르기)"; live.textContent = "끝까지 말하세요. 말을 멈추면 자동으로 받아 적어요."; }
+            else { btn.classList.remove("on"); btn.classList.add("wait"); btn.textContent = "받아 적는 중…"; live.textContent = ""; }
+          } });
+        btn.classList.remove("on", "wait"); btn.textContent = label;
         if (said) onResult(said); else live.textContent = "소리가 안 들렸어요. 다시 눌러주세요.";
       } catch (e) {
-        btn.classList.remove("on"); btn.textContent = label; typed.hidden = false;
-        live.textContent = e && e.code === "mic" ? "마이크 권한이 필요해요. 주소창 aA → 웹사이트 설정 → 마이크 허용. 아래에 직접 입력해도 돼요." : "음성 인식을 쓸 수 없어요. 아래에 입력해 주세요.";
+        btn.classList.remove("on", "wait"); btn.textContent = label; typed.hidden = false;
+        live.textContent = e && e.code === "stt" ? `받아 적지 못했어요 (${e.message || "오류"}). 다시 누르거나 아래에 입력해 주세요.` : e && e.code === "mic" ? "마이크 권한이 필요해요. 주소창 aA → 웹사이트 설정 → 마이크 허용. 아래에 직접 입력해도 돼요." : "음성 인식을 쓸 수 없어요. 아래에 입력해 주세요.";
       }
     };
     const kb = h("button", { class: "mini", text: "⌨ 입력", onclick: () => { typed.hidden = !typed.hidden; if (!typed.hidden) typed.querySelector("input").focus(); } });
@@ -389,7 +396,7 @@ Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentenc
     wrap.append(prompt, h("div", { class: "fb-actions" },
       h("button", { class: "mini", text: "💡 힌트", onclick: () => { hintBox.hidden = !hintBox.hidden; } }),
       h("button", { class: "mini", text: "모르겠어요 (정답 보기)", onclick: () => { if (answered) return; answered = true; rc(res, h("div", { class: "verdict bad", text: "정답" }), h("div", { class: "q-target", text: card.t }), card.read ? readBlock(card.t, card.read, false) : null, h("button", { class: "ghost sm", text: "다음", onclick: () => done(false) })); say(card.t, lang); } })),
-      hintBox, micAnswer({ lang, onResult }), res);
+      hintBox, micAnswer({ lang, onResult, context: `Review quiz. The speaker is trying to say${card.ko ? `: "${card.ko}"` : " a practised sentence"} (model answer: "${firstAlt(card.t)}"). They may use different words.` }), res);
     return wrap;
   }
   function listenChoose(card, done) {
@@ -453,20 +460,21 @@ Return only JSON: {"ok": true or false, "feedback_ko": "1-2 short Korean sentenc
   }
 
   // one spoken (or typed) line from the learner
-  function askLine(lang, status, row) {
+  function askLine(lang, status, row, context = "") {
     return new Promise((resolve) => {
       let settled = false;
       const input = row.querySelector("input"), okBtn = row.querySelector(".ok"), micBtn = row.querySelector(".mic-mini");
       input.value = ""; row.hidden = false;
-      const fin = (t) => { if (settled) return; settled = true; row.hidden = true; try { TP.listenOnce.stop && TP.listenOnce.stop(); } catch {} resolve(t); };
+      const fin = (t) => { if (settled) return; settled = true; row.hidden = true; cancelListen(); resolve(t); };
       okBtn.onclick = () => { const v = input.value.trim(); if (v) fin(v); };
       input.onkeydown = (e) => { if (e.key === "Enter") okBtn.click(); };
       const listen = () => {
         if (!TP.hasSR) { status.textContent = "아래에 내 대사를 입력하세요."; micBtn.hidden = true; return; }
         micBtn.classList.add("on");
-        TP.listenOnce({ lang, onInterim: (t) => { status.textContent = "듣는 중: " + t; } })
+        TP.listenOnce({ lang, context, onInterim: (t) => { status.textContent = "듣는 중: " + t; },
+          onPhase: (ph) => { status.textContent = ph === "listen" ? "듣는 중… 말을 멈추면 받아 적어요" : "받아 적는 중…"; } })
           .then((t) => { micBtn.classList.remove("on"); if (settled) return; if (t) fin(t); else status.textContent = "소리가 안 들렸어요. 🎤를 누르거나 입력하세요."; })
-          .catch(() => { micBtn.classList.remove("on"); if (!settled) status.textContent = "마이크를 쓸 수 없어요. 아래에 입력하세요."; });
+          .catch((e) => { micBtn.classList.remove("on"); if (!settled) status.textContent = e && e.code === "stt" ? "받아 적지 못했어요. 🎤를 다시 누르거나 입력하세요." : "마이크를 쓸 수 없어요. 아래에 입력하세요."; });
       };
       micBtn.onclick = () => { if (micBtn.classList.contains("on")) { TP.listenOnce.stop && TP.listenOnce.stop(); } else listen(); };
       listen();
@@ -538,7 +546,8 @@ Return only JSON: {"ok": true if the learner's sentence is natural, correct and 
         for (let attempt = 0; attempt < 2 && !ok; attempt++) {
           if (!alive()) return;
           status.textContent = attempt ? "모범 문장을 들었으니 한 번 더 말해 보세요 (2/2)" : "내 차례 · 말해 보세요";
-          const said = await askLine(lang, status, row);
+          const prevP = n.script.slice(0, i).reverse().find(x => x.who === "partner");
+          const said = await askLine(lang, status, row, `Script rehearsal.${prevP ? ` The partner just said: "${prevP.t}".` : ""} The speaker's scripted line is: "${l.t}", but they may say it differently or make mistakes.`);
           if (!alive()) return;
           saidMap[i] = said;
           const r = check(l.t, said, lang);
@@ -741,7 +750,7 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
       stepNav, body);
     document.querySelector(".lt-face").innerHTML = TP.avatar(L.scene);
     let step = startStep, tok = 0;
-    const go = (k) => { TP.cancelSpeech(); try { TP.listenOnce.stop && TP.listenOnce.stop(); } catch {} step = k; tok++; draw(); document.getElementById("main").scrollTop = 0; };
+    const go = (k) => { TP.cancelSpeech(); cancelListen(); step = k; tok++; draw(); document.getElementById("main").scrollTop = 0; };
     const nextBtn = (label) => h("button", { class: "primary", text: label || `다음: ${EN_STEPS[step + 1][1]}`, onclick: () => go(step + 1) });
     const gBadge = (g) => g == null ? null : h("span", { class: "g-badge", text: "문법 " + (g + 1) + " · " + L.grammar[g].title });
     function draw() {
@@ -797,7 +806,7 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
           h("div", { class: "qcard" },
             h("div", { class: "q-target big", text: d.t }), h("div", { class: "q-ko", text: d.ko }), gBadge(d.g),
             h("div", { class: "fb-actions" }, h("button", { class: "ghost sm", text: "▶ 듣기", onclick: () => say(d.t, "en", meVoice) }), h("button", { class: "ghost sm", text: "🐢 천천히", onclick: () => say(d.t, "en", { ...meVoice, rate: 0.7 }) })),
-            micAnswer({ lang: "en", label: "🎤 따라 말하기", onResult: async (said) => {
+            micAnswer({ lang: "en", label: "🎤 따라 말하기", context: `${prevLine && prevLine.who === "partner" ? `The partner said: "${prevLine.t}". ` : ""}The speaker is trying to repeat this sentence: "${d.t}". They may skip or change words.`, onResult: async (said) => {
               const r = check(d.t, said, "en");
               rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "좋아요! 👍" : "조금 달라요" }), h("div", { class: "note", text: "내가 한 말: " + said }), diffView(r));
               if (r.pass) return;
@@ -871,7 +880,7 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
           rc(box, ...head, h("div", { class: "qcard" },
             h("div", { class: "q-ko big", text: d.ko }), gBadge(d.g), h("div", { class: "note", text: "영어로 말해 보세요. 대화문과 똑같지 않아도 뜻이 통하고 자연스러우면 정답이에요." }),
             h("div", { class: "fb-actions" }, h("button", { class: "mini", text: "💡 첫 단어 힌트", onclick: () => { hint.hidden = false; } })), hint,
-            micAnswer({ lang: "en", onResult: async (said) => {
+            micAnswer({ lang: "en", context: `The speaker is trying to say in English: "${d.ko}" (one good answer: "${d.t}"). They may use different words.`, onResult: async (said) => {
               if (done) return;
               const r = check(d.t, said, "en");
               rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "정답! 👍" : "모범 문장과 달라요" }), h("div", { class: "note", text: "내가 한 말: " + said }), h("div", { class: "note", text: "모범 문장:" }), diffView(r));
@@ -980,7 +989,7 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
           h("div", { class: "fb-actions center" },
             h("button", { class: "ghost sm", text: "▶ 보통", onclick: () => play(0.85) }),
             h("button", { class: "ghost sm", text: "🐢 천천히", onclick: () => play(0.5) })),
-          micAnswer({ lang: "vi", label: "🎤 따라 하기", onResult: (said) => {
+          micAnswer({ lang: "vi", label: "🎤 따라 하기", context: `The speaker is a beginner trying to repeat the Vietnamese "${it.v}" (${it.k}).`, onResult: (said) => {
             const r = check(it.v, said, "vi");
             rc(res, h("div", { class: r.pass ? "verdict ok" : "verdict bad", text: r.pass ? "좋아요! 비슷해요 👍" : "괜찮아요, 한 번 더 들어 보고 따라 해요" }), h("div", { class: "note", text: "들린 말: " + said }));
             if (!r.pass) play(0.6);
@@ -1027,7 +1036,7 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
       rc(body, stepBar(), h("div", { class: "note", text: `남은 문제 ${q.length + 1}` }), frameBanner(),
         h("div", { class: "qcard center" }, h("div", { class: "q-ko big", text: it.k }), h("div", { class: "note", text: "베트남어로 말해 보세요. 생각이 안 나면 발음 보기를 누르세요." }),
           h("div", { class: "fb-actions center" }, h("button", { class: "mini", text: "💡 발음 보기", onclick: () => { hint.hidden = false; say(it.v, "vi", { rate: 0.6 }); } })), hint,
-          micAnswer({ lang: "vi", onResult: (said) => {
+          micAnswer({ lang: "vi", context: `The speaker is a beginner trying to say in Vietnamese: "${it.k}" (answer: "${it.v}").`, onResult: (said) => {
             const r = check(it.v, said, "vi");
             if (r.pass && hint.hidden) score.speak++;
             hint.hidden = false;
@@ -1177,6 +1186,8 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
   .mic-row { display: flex; gap: 12px; align-items: center; }
   .mic-btn { background: var(--ink); color: var(--bg); border: 0; border-radius: 99px; padding: 16px 30px; font-weight: 700; font-size: 17px; }
   .mic-btn.on { background: var(--good); color: #fff; }
+  .mic-btn.on { box-shadow: 0 0 0 calc(3px + var(--lvl, 0) * 12px) color-mix(in srgb, var(--good) 25%, transparent); transition: box-shadow .08s linear; }
+  .mic-btn.wait { background: var(--line-strong); color: var(--ink); }
   @media (prefers-reduced-motion: no-preference) { .mic-btn.on, .mic-mini.on { animation: pulse 1.3s ease-in-out infinite; } }
   .live { min-height: 1.4em; color: var(--muted); font-size: 16px; font-family: var(--font-serif); }
   .typed { display: flex; gap: 8px; width: 100%; max-width: 560px; align-items: center; }
