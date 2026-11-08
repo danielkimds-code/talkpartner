@@ -1209,6 +1209,11 @@ Reply with ONLY the JSON object: {"title":"","goal":"","icon":"","role":"","gram
   .steps.big .sn { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; background: var(--bg); color: var(--muted); font-variant-numeric: tabular-nums; }
   .steps.big button.past { color: var(--ink); } .steps.big button.past .sn { background: var(--good-soft); color: var(--good); }
   .steps.big button.on { background: var(--ink); color: var(--bg); border-color: var(--ink); } .steps.big button.on .sn { background: var(--hl); color: #1B2340; }
+  @media (max-width: 560px) {
+    .steps.big { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
+    .steps.big button { padding: 7px 8px 7px 6px; font-size: 13.5px; gap: 6px; min-width: 0; }
+    .steps.big .sn { width: 22px; height: 22px; flex: none; }
+  }
   .course { display: grid; gap: 16px; }
   .lessons { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 12px; }
   .lesson { border: 1px solid var(--line); background: var(--surface); border-radius: 18px; padding: 16px; text-align: left; display: grid; gap: 4px; box-shadow: var(--shadow); }
