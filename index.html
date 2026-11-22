@@ -265,7 +265,7 @@ textarea {
   <form id="loginForm" autocomplete="on">
     <div class="brand">Talk<span>Partner</span></div>
     <p class="sub">영어 · 베트남어 연습 · 로그인</p>
-    <label>아이디 <input type="text" id="loginId" autocomplete="username" autocapitalize="off" spellcheck="false" required></label>
+    <label>아이디 <input type="text" id="loginId" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required></label>
     <label>비밀번호 <input type="password" id="loginPw" autocomplete="current-password" required></label>
     <label class="remember"><input type="checkbox" id="loginKeep" checked> 이 아이패드에서 로그인 유지</label>
     <button class="primary" type="submit">로그인</button>
@@ -416,7 +416,7 @@ textarea {
 (() => {
   // ---------- login gate (simple lock screen; only a hash is stored in the code) ----------
   const LOGIN_HASHES = [
-    "77f926432da5beafc6dfee03159d50009eb94a8e7598101b381288100aa69ae1",
+    "2bfcacdd1dd4dd977bca981facde5d61737a390e71d5931b8d91e7d0b92b70c5",
     "93e3ecffcc09db4668a1211b722eeda89590a8ed48fe3d09a5c73da8c8143309",
   ];
   const LOGIN_DAYS = 30;
@@ -444,6 +444,28 @@ textarea {
     out = out.trim();
     return out ? out[0].toUpperCase() + out.slice(1) : "";
   }
+  // If the relay rejects the saved login (e.g. the ID or password was changed), go back to the login screen.
+  (() => {
+    const realFetch = window.fetch.bind(window);
+    let shown = false;
+    window.fetch = async (input, init) => {
+      const res = await realFetch(input, init);
+      try {
+        const url = typeof input === "string" ? input : input.url;
+        if (res.status === 401 && /talkpartner-relay/.test(url) && !shown) {
+          const j = await res.clone().json().catch(() => ({}));
+          if (/Login token invalid/i.test((j.error && j.error.message) || "")) {
+            shown = true;
+            try { ["tp_auth_until", "tp_rtok", "tp_user"].forEach(k => localStorage.removeItem(k)); ["tp_auth", "tp_rtok", "tp_user"].forEach(k => sessionStorage.removeItem(k)); } catch {}
+            const lv = document.getElementById("loginView"), err = document.getElementById("loginErr");
+            if (lv) lv.hidden = false;
+            if (err) err.textContent = "로그인 정보가 바뀌었어요. 새 아이디와 비밀번호로 다시 로그인해 주세요.";
+          }
+        }
+      } catch {}
+      return res;
+    };
+  })();
   function loggedIn() {
     if (!relayToken() || !userId()) return false;   // older sessions log in once more to get the token and name
     try { const u = Number(localStorage.getItem("tp_auth_until") || 0); if (u > Date.now()) return true; } catch {}
@@ -454,7 +476,7 @@ textarea {
   else setTimeout(() => document.getElementById("loginId").focus(), 50);
   document.getElementById("loginForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
-    const id = document.getElementById("loginId").value.trim().normalize("NFC");
+    const id = document.getElementById("loginId").value.trim().normalize("NFC").toLowerCase();
     const pw = document.getElementById("loginPw").value.normalize("NFC");
     let h = "";
     try { h = await sha256("talkpartner|" + id + "|" + pw); } catch {}
@@ -1628,7 +1650,7 @@ Reply with JSON only: {"text": "..."}`;
     hasSR: !!SR || canRecord,
     sttOn, checkStt,
     getLang: () => lang, getLevel: () => level,
-    user: () => { const id = userId(); return { id, en: romanize(id) || id }; },
+    user: () => { const id = userId(), en = romanize(id) || id; return { id: /[가-힣]/.test(id) ? id : en, en }; },
     connected: () => !!apiKey || !!BUILTIN_RELAY,
     useBuiltin: () => providerOf(apiKey) === "builtin",
     show, renderSetup,
