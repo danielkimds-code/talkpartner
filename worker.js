@@ -14,6 +14,12 @@ const API_KEY = "";    // sk-... (built-in key, optional)
 const GEMINI_KEY = ""; // Google AI Studio key for speech-to-text (optional)
 // tried in order; the next one is used when a model is busy or out of free quota
 const STT_MODELS = ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+// When the main AI service refuses the relay (e.g. its firewall blocks Cloudflare Workers), chat goes to Gemini instead.
+const GEMINI_CHAT = {
+  chat: ["gemini-flash-lite-latest", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"],
+  coach: ["gemini-3.5-flash-lite", "gemini-flash-lite-latest", "gemini-3.1-flash-lite"],
+};
+let upstreamDownUntil = 0;   // skip the main service for a while after it refused
 // login-derived token -> storage slot ("" keeps the first account's original keys)
 const APP_TOKENS = {};
 const ALLOWED_ORIGINS = ["https://danielkimds-code.github.io"];
@@ -109,18 +115,51 @@ export default {
       auth = "Bearer " + API_KEY;
     }
 
-    let upstream;
-    try {
-      upstream = await fetch(UPSTREAM + url.pathname + url.search, {
-        method: request.method,
-        headers: { "authorization": auth, "content-type": "application/json" },
-        body: request.method === "GET" ? undefined : await request.text(),
-      });
-    } catch (e) {
-      return json(502, "Upstream unreachable: " + String(e && e.message || e));
+    const bodyText = request.method === "GET" ? undefined : await request.text();
+    const pass = (r) => {
+      const headers = new Headers(cors);
+      headers.set("content-type", r.headers.get("content-type") || "application/json");
+      return new Response(r.body, { status: r.status, headers });
+    };
+    let upstream = null, why = "";
+    if (Date.now() >= upstreamDownUntil) {
+      try {
+        upstream = await fetch(UPSTREAM + url.pathname + url.search, {
+          method: request.method,
+          headers: { "authorization": auth, "content-type": "application/json" },
+          body: bodyText,
+        });
+        if (upstream.ok) return pass(upstream);
+        why = "HTTP " + upstream.status;
+        if (upstream.status === 403 || upstream.status >= 500) upstreamDownUntil = Date.now() + 10 * 60 * 1000;
+      } catch (e) {
+        why = "unreachable: " + String(e && e.message || e);
+        upstreamDownUntil = Date.now() + 2 * 60 * 1000;
+      }
     }
-    const headers = new Headers(cors);
-    headers.set("content-type", upstream.headers.get("content-type") || "application/json");
-    return new Response(upstream.body, { status: upstream.status, headers });
+    // Fallback: Gemini's OpenAI-compatible endpoint (same request and streaming format)
+    const usesBuiltin = auth === "Bearer " + API_KEY;
+    if (GEMINI_KEY && usesBuiltin && url.pathname === "/v1/chat/completions" && bodyText) {
+      let req;
+      try { req = JSON.parse(bodyText); } catch { return json(400, "Not JSON"); }
+      const list = /sonnet|opus/i.test(String(req.model || "")) ? GEMINI_CHAT.coach : GEMINI_CHAT.chat;
+      let last = why || "main service skipped";
+      for (const model of list) {
+        let r;
+        try {
+          r = await fetch("https://generativelanguage.googleapis.com/v1beta/openai/chat/completions", {
+            method: "POST",
+            headers: { "content-type": "application/json", "authorization": "Bearer " + GEMINI_KEY },
+            body: JSON.stringify({ ...req, model }),
+          });
+        } catch (e) { last = "Gemini unreachable: " + String(e && e.message || e); continue; }
+        if (r.ok) { const out = pass(r); out.headers.set("x-tp-model", model); return out; }
+        last = "Gemini " + model + " HTTP " + r.status;
+        if (![429, 500, 503, 404].includes(r.status)) break;
+      }
+      return json(503, "AI unavailable (" + last + ")");
+    }
+    if (upstream) return pass(upstream);
+    return json(502, "Upstream " + (why || "unavailable"));
   },
 };
